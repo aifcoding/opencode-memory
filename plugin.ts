@@ -280,7 +280,6 @@ export default async function opencodeMemory(input: any, options: Record<string,
                 summaryText: textPart.text,
                 createdAt: Date.now(),
               });
-              console.log(`[opencode-memory] archived summary (session ${sid})`);
             }
           }
         }

@@ -1,6 +1,6 @@
 {
   "name": "@aifcoding/opencode-memory",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "opencode 本地持久记忆插件：三层记忆（长期知识/情景摘要/会话工作记忆），纯本地 SQLite + jieba 中文检索",
   "type": "module",
   "main": "dist/plugin.js",
