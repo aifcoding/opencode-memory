@@ -65,7 +65,7 @@ export interface MemoryStore {
   restore(id: number): boolean;
   listByScope(scope: Scope, scopeKey: string, opts?: { type?: string; limit?: number }): MemoryEntry[];
   listPinned(scope: Scope, scopeKey: string): MemoryEntry[];
-  getPinnedSize(scope: Scope, scopeKey: string): number;
+  pinWithinQuota(id: number, pinMode: PinMode, summary: string, quota: number): { ok: boolean; size: number };
   search(query: string, opts?: SearchOptions): SearchHit[];
   archiveSummary(input: SummaryArchiveInput): void;
   searchSummaries(query: string, limit?: number): SummaryResult[];

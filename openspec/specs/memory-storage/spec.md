@@ -7,7 +7,7 @@
 
 ### Requirement: 记忆条目 CRUD
 
-系统 SHALL 支持创建、按 id 读取、更新、软删除记忆条目，字段覆盖 `ARCHITECTURE.md` 数据模型（origin/trust/scope/scope_key/type/content/summary/pin_mode/embedding/embed_model/embed_dim/content_hash/revision/created_at/updated_at/deleted_at）。
+存储层 SHALL 支持创建、读取、元数据更新、CAS 内容更新、软删除和恢复；插件公开工具集在当前版本仅暴露创建、读取和软删除。字段覆盖 `ARCHITECTURE.md` 数据模型（origin/trust/scope/scope_key/type/content/summary/pin_mode/embedding/embed_model/embed_dim/content_hash/revision/created_at/updated_at/deleted_at）。
 
 #### Scenario: 创建条目
 - **WHEN** 调用 create 且 content/scope/scope_key 合法
@@ -72,3 +72,7 @@
 #### Scenario: 顺序升级
 - **WHEN** 从旧版本启动
 - **THEN** 依次执行未应用的迁移，版本号递增；任一迁移失败则中止并报错
+
+### Requirement: 配置
+
+配置 SHALL 从 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`）读取，`.jsonc` 优先；文件不存在可忽略，读取或解析错误必须显式报错。文件配置与插件 options 走同一 Zod Schema，options 覆盖文件配置；`dbPath` 须为绝对路径，`pinQuota` 须为正整数。

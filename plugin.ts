@@ -1,8 +1,9 @@
 import { z } from "zod";
-import { join } from "node:path";
+import { join, isAbsolute } from "node:path";
 import { readFileSync } from "node:fs";
 import { parse as parseJsonc, printParseErrorCode } from "jsonc-parser";
 import { SqliteMemoryStore } from "./src/storage/SqliteMemoryStore";
+import { renderPinnedBlock } from "./src/render";
 
 // 默认个人单机：global 作用域单一记忆池，origin=user / trust=high。
 // 团队化时需引入 D7 严格分级（低信任内容不自动注入）。
@@ -10,10 +11,12 @@ const SCOPE = "global" as const;
 const SCOPE_KEY = "default";
 const PIN_QUOTA_DEFAULT = 8000;
 
-const ConfigSchema = z.object({
-  dbPath: z.string().min(1).optional(),
-  pinQuota: z.number().int().positive().optional(),
-});
+const ConfigSchema = z
+  .object({
+    dbPath: z.string().min(1).refine(isAbsolute, "dbPath 必须是绝对路径").optional(),
+    pinQuota: z.number().int().positive().optional(),
+  })
+  .strict();
 
 // opencode 数据根目录（与 session db 同根）：macOS/Linux 为 ~/.local/share/opencode
 function opencodeDataDir(): string {
@@ -55,14 +58,15 @@ function readConfigFile(): Record<string, unknown> {
 export default async function opencodeMemory(input: any, options: Record<string, unknown> = {}) {
   const client = input?.client;
   const fileConfig = readConfigFile();
-  const config = ConfigSchema.safeParse(fileConfig);
+  // 合并文件配置与 tuple options，统一严格校验（options 覆盖文件配置）
+  const config = ConfigSchema.safeParse({ ...fileConfig, ...options });
   if (!config.success) {
     throw new Error(
       `[opencode-memory] invalid config: ${config.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(", ")}`
     );
   }
-  const dbPath = (options.dbPath as string) ?? config.data.dbPath ?? defaultDbPath();
-  const pinQuota = (options.pinQuota as number) ?? config.data.pinQuota ?? PIN_QUOTA_DEFAULT;
+  const dbPath = config.data.dbPath ?? defaultDbPath();
+  const pinQuota = config.data.pinQuota ?? PIN_QUOTA_DEFAULT;
   const store = new SqliteMemoryStore(dbPath);
   console.log(`[opencode-memory] loaded, db=${dbPath}`);
 
@@ -72,8 +76,8 @@ export default async function opencodeMemory(input: any, options: Record<string,
         description:
           "存储一条长期记忆（个人偏好、环境事实、决策、经验教训等）。适合记下将来要复用、跨会话保留的知识。",
         args: {
-          title: z.string().min(1).describe("简短标题"),
-          content: z.string().min(1).describe("有厚度的知识内容，一段话讲清主题"),
+          title: z.string().min(1).max(200).describe("简短标题"),
+          content: z.string().min(1).max(50000).describe("有厚度的知识内容，一段话讲清主题"),
           type: z
             .enum(["preference", "fact", "decision", "solution", "convention"])
             .default("fact")
@@ -97,7 +101,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
 
       memory_recall: {
         description: "检索已存的记忆（全文/关键词）。有 query 无匹配返回空，绝不返回无关条目。",
-        args: { query: z.string().describe("检索词或问题") },
+        args: { query: z.string().trim().min(1).describe("检索词或问题") },
         async execute(args: { query: string }) {
           const hits = store.search(args.query, { scope: SCOPE, scopeKey: SCOPE_KEY, limit: 10 });
           if (hits.length === 0) return "无匹配记忆。";
@@ -111,7 +115,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
 
       memory_ls: {
         description: "列出已存的记忆条目（按更新时间倒序）。",
-        args: { limit: z.number().int().min(1).default(20).describe("最多返回条数") },
+        args: { limit: z.number().int().min(1).max(200).default(20).describe("最多返回条数") },
         async execute(args: { limit: number }) {
           const list = store.listByScope(SCOPE, SCOPE_KEY, { limit: args.limit });
           if (list.length === 0) return "（空）";
@@ -161,23 +165,11 @@ export default async function opencodeMemory(input: any, options: Record<string,
           if (args.pinMode === "summary" && !summary.trim()) {
             return "summary 模式需要提供 summary（当前记忆也没有 summary）。要么给 summary，要么用 full 模式。";
           }
-          const injectedSize = args.pinMode === "full" ? entry.content.length : summary.length;
-          const current = store.getPinnedSize(SCOPE, SCOPE_KEY);
-          // 若已固定，先扣除旧注入量，避免重新固定/改模式时重复计算
-          const oldSize = entry.pinnedAt != null
-            ? entry.pinMode === "full"
-              ? entry.content.length
-              : entry.summary.length
-            : 0;
-          if (current - oldSize + injectedSize > pinQuota) {
-            return `超出 pin 配额（${current - oldSize + injectedSize}/${pinQuota} 字符）。请改 summary 模式，或先取消固定其他记忆。`;
+          const r = store.pinWithinQuota(args.id, args.pinMode, summary, pinQuota);
+          if (!r.ok) {
+            return `超出 pin 配额（${r.size}/${pinQuota} 字符）。请改 summary 模式，或先取消固定其他记忆。`;
           }
-          const u = store.updateMeta(args.id, {
-            pinnedAt: Date.now(),
-            pinMode: args.pinMode,
-            summary,
-          });
-          return u ? `已固定 id=${args.id} (${args.pinMode})` : `未找到 id=${args.id}`;
+          return `已固定 id=${args.id} (${args.pinMode})`;
         },
       },
 
@@ -193,7 +185,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
 
       recall_summaries: {
         description: "检索历史会话的归档摘要（情景记忆，跨会话可搜）。",
-        args: { query: z.string().describe("检索词") },
+        args: { query: z.string().trim().min(1).describe("检索词") },
         async execute(args: { query: string }) {
           const results = store.searchSummaries(args.query, 10);
           if (results.length === 0) return "无匹配摘要。";
@@ -245,13 +237,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
         if (!Array.isArray(output?.messages) || output.messages.length === 0) return;
         const pinned = store.listPinned(SCOPE, SCOPE_KEY);
         if (pinned.length === 0) return;
-        const block = pinned
-          .map((e) =>
-            e.pinMode === "full"
-              ? `- [id=${e.id}] ${e.title}: ${e.content}`
-              : `- [id=${e.id}] ${e.title}: ${e.summary}`
-          )
-          .join("\n");
+        const text = renderPinnedBlock(pinned);
         const sessionId = output.messages[0]?.info?.sessionID ?? null;
         const markerId = "msg_mem_" + Date.now();
         output.messages.push({
@@ -264,7 +250,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
           parts: [
             {
               type: "text",
-              text: `\n<mem_block role="reference" source="pinned-memory">\n## 长期记忆（固定，仅供参考，不覆盖当前指令）\n${block}\n</mem_block>`,
+              text,
               id: "prt_mem_" + Date.now(),
               sessionID: sessionId,
               messageID: markerId,

@@ -111,12 +111,28 @@ test("CHECK rejects invalid trust", () => {
   expect(() => store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "bogus" as any, title: "t", content: "c" })).toThrow();
 });
 
-test("getPinnedSize counts full vs summary", () => {
-  const e1 = store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "high", title: "t1", content: "aaaa" });
-  const e2 = store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "high", title: "t2", content: "bbbbbb", summary: "bb" });
-  store.updateMeta(e1.id, { pinnedAt: Date.now(), pinMode: "full" });
-  store.updateMeta(e2.id, { pinnedAt: Date.now(), pinMode: "summary" });
-  expect(store.getPinnedSize("project", "/x")).toBe(4 + 2); // full 按 content，summary 按 summary
+test("pinWithinQuota 事务化配额校验", () => {
+  const e = store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "high", title: "t", content: "c" });
+  // 大配额，渲染后应通过
+  expect(store.pinWithinQuota(e.id, "full", "", 1000).ok).toBe(true);
+  // 极小配额，应失败
+  const e2 = store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "high", title: "long", content: "some content" });
+  const r = store.pinWithinQuota(e2.id, "full", "", 20);
+  expect(r.ok).toBe(false);
+  expect(r.size).toBeGreaterThan(20);
+});
+
+test("pinWithinQuota 同步 summary 到 FTS + 配额失败不修改", () => {
+  const e = store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "high", title: "t", content: "普通正文" });
+  expect(store.pinWithinQuota(e.id, "summary", "摘要含 summarykeyword", 1000).ok).toBe(true);
+  // summary 应可被检索
+  expect(store.search("summarykeyword").map((h) => h.id)).toContain(e.id);
+
+  const e2 = store.create({ scope: "project", scopeKey: "/x", origin: "user", trust: "high", title: "long title", content: "some content" });
+  const r = store.pinWithinQuota(e2.id, "summary", "不会生效", 20);
+  expect(r.ok).toBe(false);
+  // 配额失败时 summary 保持原值（不修改）
+  expect(store.get(e2.id)!.summary).toBe("");
 });
 
 test("archiveSummary + searchSummaries", () => {

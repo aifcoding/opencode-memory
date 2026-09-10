@@ -74,35 +74,40 @@ const migrations: Migration[] = [
 ];
 
 export function migrate(db: Database): void {
-  db.run(
-    `CREATE TABLE IF NOT EXISTS db_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`
-  );
-  const maxVersion = Math.max(0, ...migrations.map((m) => m.version));
-  const applied = new Set(
-    (db.query(`SELECT version FROM db_migrations`).all() as { version: number }[]).map((r) => r.version)
-  );
-  for (const v of applied) {
-    if (v > maxVersion) {
-      throw new Error(`Database version ${v} is newer than code max version ${maxVersion}`);
+  // 先取写锁，再读已应用版本并执行迁移，避免多个实例并发初始化时同时迁移导致 table already exists
+  db.run("BEGIN IMMEDIATE");
+  try {
+    db.run(
+      `CREATE TABLE IF NOT EXISTS db_migrations (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)`
+    );
+    const maxVersion = Math.max(0, ...migrations.map((m) => m.version));
+    const applied = new Set(
+      (db.query(`SELECT version FROM db_migrations`).all() as { version: number }[]).map((r) => r.version)
+    );
+    for (const v of applied) {
+      if (v > maxVersion) {
+        throw new Error(`Database version ${v} is newer than code max version ${maxVersion}`);
+      }
     }
-  }
-  // 校验已应用版本连续（从 1 起无缺口）
-  for (const v of applied) {
-    if (v > 1 && !applied.has(v - 1)) {
-      throw new Error(`Migration gap detected: version ${v} applied but ${v - 1} is missing`);
+    // 校验已应用版本连续（从 1 起无缺口）
+    for (const v of applied) {
+      if (v > 1 && !applied.has(v - 1)) {
+        throw new Error(`Migration gap detected: version ${v} applied but ${v - 1} is missing`);
+      }
     }
-  }
-  for (const m of [...migrations].sort((a, b) => a.version - b.version)) {
-    if (applied.has(m.version)) continue;
-    const prev = m.version - 1;
-    if (prev > 0 && !applied.has(prev)) {
-      throw new Error(`Migration out of order: version ${m.version} requires ${prev} which is not applied`);
-    }
-    // 单步迁移：DDL + 版本记录在同一事务，失败整体回滚
-    db.transaction(() => {
+    for (const m of [...migrations].sort((a, b) => a.version - b.version)) {
+      if (applied.has(m.version)) continue;
+      const prev = m.version - 1;
+      if (prev > 0 && !applied.has(prev)) {
+        throw new Error(`Migration out of order: version ${m.version} requires ${prev} which is not applied`);
+      }
       m.up(db);
       db.run(`INSERT INTO db_migrations (version, applied_at) VALUES (?, ?)`, [m.version, Date.now()]);
-    })();
-    applied.add(m.version);
+      applied.add(m.version);
+    }
+    db.run("COMMIT");
+  } catch (e) {
+    try { db.run("ROLLBACK"); } catch {}
+    throw e;
   }
 }

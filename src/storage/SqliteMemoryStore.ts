@@ -2,7 +2,8 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { MemoryEntry, Scope } from "../types.js";
+import type { MemoryEntry, PinMode, Scope } from "../types.js";
+import { renderPinnedBlock } from "../render.js";
 import { tokenize } from "./tokenizer.js";
 import { migrate } from "./migrations.js";
 import { checkCapabilities } from "./capability.js";
@@ -226,12 +227,38 @@ export class SqliteMemoryStore implements MemoryStore {
     return rows.map(mapRow);
   }
 
-  getPinnedSize(scope: Scope, scopeKey: string): number {
-    let total = 0;
-    for (const e of this.listPinned(scope, scopeKey)) {
-      total += e.pinMode === "full" ? e.content.length : e.summary.length;
-    }
-    return total;
+  // 在单个写事务内完成「读固定项 → 按最终渲染长度校验配额 → 更新」，避免多进程并发突破配额
+  pinWithinQuota(id: number, pinMode: PinMode, summary: string, quota: number): { ok: boolean; size: number } {
+    return this.withRetry(() => {
+      this.db.run("BEGIN IMMEDIATE");
+      try {
+        const target = this.db.query(`SELECT * FROM memories WHERE id = ?`).get(id) as Row | undefined;
+        if (!target || target.deleted_at != null) {
+          this.db.run("ROLLBACK");
+          return { ok: false, size: 0 };
+        }
+        const others = this.db.query(
+          `SELECT * FROM memories WHERE scope = ? AND scope_key = ? AND deleted_at IS NULL AND pinned_at IS NOT NULL AND id != ?`
+        ).all(target.scope, target.scope_key, id) as Row[];
+        const targetEntry: MemoryEntry = { ...mapRow(target), pinMode, summary };
+        const size = renderPinnedBlock([...others.map(mapRow), targetEntry]).length;
+        if (size > quota) {
+          this.db.run("ROLLBACK");
+          return { ok: false, size };
+        }
+        this.db.run(
+          `UPDATE memories SET pinned_at = ?, pin_mode = ?, summary = ?, updated_at = ? WHERE id = ?`,
+          [Date.now(), pinMode, summary, Date.now(), id]
+        );
+        // summary 属于 FTS body，须在同一事务内同步索引
+        this.syncFts(id, { title: target.title, summary, content: target.content });
+        this.db.run("COMMIT");
+        return { ok: true, size };
+      } catch (e) {
+        try { this.db.run("ROLLBACK"); } catch {}
+        throw e;
+      }
+    });
   }
 
   search(query: string, opts?: SearchOptions): SearchHit[] {

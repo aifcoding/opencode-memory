@@ -15,17 +15,17 @@
 - **三层记忆模型**
   - 长期知识：保存偏好、事实、决策、解决方案和项目约定
   - 情景摘要：自动归档会话压缩摘要，可跨会话检索
-  - 会话工作记忆：当前会话内的临时键值存储
+  - 会话工作记忆：按 `sessionID` 隔离的持久键值存储（当前版本不自动清理）
 - **纯本地运行**：基于 `bun:sqlite`，数据只写入本机
 - **零外部服务**：无需云数据库、嵌入 API 或独立检索服务
 - **中文友好检索**：使用 `jieba-wasm` 分词和 FTS5 BM25 排序
-- **开发标识符检索**：保留 `foo_bar`、`CamelCase` 等英文标识符
+- **开发标识符检索**：`CamelCase` 会拆分为词元，`foo_bar` 等下划线标识符按整体保留
 - **固定记忆自动注入**：每轮向主模型注入指定记忆
 - **非持久化注入**：注入内容不写入消息历史，修改或取消固定后下一轮生效
 - **全文与摘要模式**：固定记忆支持 `full` 和 `summary`
 - **压缩自动归档**：监听 `session.compacted`，幂等保存压缩摘要
 - **软删除与内容去重**：已删除记忆不再参与列表和检索
-- **单文件数据库**：支持 WAL、写入重试和版本化迁移
+- **本地 SQLite 数据库**：启用 WAL、写入重试和版本化迁移（运行期可能有 `-wal`/`-shm` 辅助文件）
 
 ## 三层记忆模型
 
@@ -33,33 +33,25 @@
 |---|---|---|---|---|
 | 长期知识 | `memories` | 跨会话持久保存 | 技术偏好、环境事实、架构决策、经验教训、团队约定 | `memory_*` |
 | 情景摘要 | `session_summaries` | 会话压缩后自动归档 | 历史会话的目标、进展、结论和未完成事项 | `recall_summaries` |
-| 会话工作记忆 | `session_kv` | 当前会话范围 | 当前需求编号、临时约束、中间状态 | `kv_*` |
+| 会话工作记忆 | `session_kv` | 按 `sessionID` 隔离（持久） | 当前需求编号、临时约束、中间状态 | `kv_*` |
 
 固定记忆不是第四层，而是长期知识的一种使用方式：通过 `memory_pin` 将指定长期记忆设为每轮自动注入。
 
 ## 快速开始
 
-### 1. 下载并安装依赖
+### 1. 注册插件（npm）
 
-```bash
-git clone https://github.com/aifcoding/opencode-memory.git
-cd opencode-memory
-bun install
-```
-
-### 2. 注册插件
-
-在 OpenCode 配置文件 `opencode.json` 或 `opencode.jsonc` 中加入插件的绝对路径：
+在 OpenCode 配置文件 `opencode.json` 或 `opencode.jsonc` 中加入包名：
 
 ```jsonc
 {
-  "plugin": [
-    "/absolute/path/to/opencode-memory/plugin.ts"
-  ]
+  "plugin": ["@aifcoding/opencode-memory"]
 }
 ```
 
-### 3. 重启 OpenCode
+OpenCode 启动时会通过 Bun 自动安装并缓存插件。
+
+### 2. 重启 OpenCode
 
 启动日志中出现以下内容即表示插件已加载：
 
@@ -67,7 +59,7 @@ bun install
 [opencode-memory] loaded, db=/Users/you/.local/share/opencode/memory/memory.db
 ```
 
-### 4. 保存第一条记忆
+### 3. 保存第一条记忆
 
 直接对 OpenCode 说：
 
@@ -83,13 +75,30 @@ bun install
 
 ## 安装
 
-### 前置条件
+### 从 npm 使用（推荐）
 
-- 已安装并可正常运行的 [OpenCode](https://opencode.ai/)
-- [Bun](https://bun.sh/)：用于安装插件依赖和运行测试
-- Git
+```jsonc
+{
+  "plugin": ["@aifcoding/opencode-memory"]
+}
+```
 
-### 本地路径安装
+如需通过插件 options 配置（优先级高于独立配置文件）：
+
+```jsonc
+{
+  "plugin": [
+    ["@aifcoding/opencode-memory", {
+      "dbPath": "/Users/you/.local/share/opencode/memory/memory.db",
+      "pinQuota": 8000
+    }]
+  ]
+}
+```
+
+### 从源码使用
+
+前置条件：[OpenCode](https://opencode.ai/)、[Bun](https://bun.sh/)、Git。
 
 ```bash
 git clone https://github.com/aifcoding/opencode-memory.git
@@ -123,12 +132,12 @@ bun install
 
 ## 配置
 
-配置通过独立文件 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`）提供（可选，不建则用默认值）：
+配置可通过插件 tuple options 或独立文件 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`）提供，options 优先；配置采用严格校验，未知字段会导致启动失败，`dbPath` 必须为绝对路径（配置目录遵循 `XDG_CONFIG_HOME`）：
 
 | 配置项 | 类型 | 默认值 | 单位 | 说明 |
 |---|---|---:|---|---|
 | `dbPath` | `string` | `$HOME/.local/share/opencode/memory/memory.db` | 文件路径 | SQLite 数据库位置（默认与 OpenCode 会话库同根目录）；父目录不存在时自动创建 |
-| `pinQuota` | `number` | `8000` | 字符 | 所有固定记忆的注入总量上限；超额时拒绝新的固定操作 |
+| `pinQuota` | `number` | `8000` | 字符 | 所有固定记忆按最终渲染文本计算的注入总量上限；超额时拒绝新的固定操作 |
 
 当前版本将长期记忆存入 `global/default` 作用域，因此不同项目共享同一个长期记忆池。会话 KV 仍按 OpenCode 的 `sessionID` 隔离。
 
@@ -254,7 +263,7 @@ memory_store(
 
 ### 使用会话工作记忆
 
-保存当前会话的临时信息：
+保存会话级信息：
 
 ```text
 把当前需求编号 DEV-2048 存到会话工作记忆，键名使用 ticket。
@@ -278,7 +287,7 @@ memory_store(
 删除会话工作记忆中的 ticket。
 ```
 
-这些键值以当前 `sessionID` 隔离，不会作为长期知识参与检索或自动注入。
+这些键值按 `sessionID` 隔离并持久保存（当前版本不自动清理），不会作为长期知识参与检索或自动注入。
 
 ## 工具参考
 
@@ -287,7 +296,7 @@ memory_store(
 | 工具 | 说明 | 参数 |
 |---|---|---|
 | `memory_store` | 存储一条长期记忆，适合保存个人偏好、环境事实、决策和经验教训 | `title: string` 必填；`content: string` 必填；`type?: "preference" \| "fact" \| "decision" \| "solution" \| "convention"`，默认 `"fact"`；`tags?: string[]`，默认 `[]` |
-| `memory_recall` | 检索已存记忆；有查询但无匹配时返回空，不返回无关条目 | `query: string` 必填 |
+| `memory_recall` | 检索已存记忆；有查询但无匹配时返回空，不回退最近条目 | `query: string` 必填 |
 | `memory_ls` | 按更新时间倒序列出记忆 | `limit?: number`，默认 `20` |
 | `memory_read` | 按 ID 读取记忆完整内容 | `id: number` 必填 |
 | `memory_forget` | 软删除记忆 | `id: number` 必填 |
@@ -377,7 +386,7 @@ memory_store(
 固定记忆通过 OpenCode 的 `experimental.chat.messages.transform` 扩展点附加到消息末尾：
 
 - 仅作为参考信息注入
-- 不覆盖当前指令和安全策略
+- 注入块标记为参考数据、提示模型视为参考；该标记是提示性的，不构成对提示注入的机制防护
 - 不写入持久化消息历史
 - 修改或取消固定后下一轮立即生效
 - `summary` 模式注入摘要，`full` 模式注入正文
@@ -385,7 +394,7 @@ memory_store(
 
 ### 数据持久化
 
-插件使用 SQLite 单文件数据库，并启用：
+插件使用本地 SQLite 数据库（WAL 模式，运行期可能有 `-wal`/`-shm` 辅助文件），并启用：
 
 - FTS5 全文索引
 - WAL 日志模式
@@ -408,6 +417,7 @@ opencode-memory/
 │   └── ARCHITECTURE.md
 ├── src/
 │   ├── types.ts
+│   ├── render.ts
 │   └── storage/
 │       ├── MemoryStore.ts
 │       ├── SqliteMemoryStore.ts
@@ -416,7 +426,8 @@ opencode-memory/
 │       └── capability.ts
 ├── tests/
 │   ├── memory-store.test.ts
-│   └── retrieval.test.ts
+│   ├── retrieval.test.ts
+│   └── plugin.test.ts
 └── openspec/
     └── specs/
         ├── memory-storage/spec.md
@@ -460,7 +471,7 @@ bun test
 |---|---|
 | `openspec/specs/` | 对外行为与验收场景 |
 | `docs/ARCHITECTURE.md` | 架构设计与决策记录 |
-| `README.md` | 安装、配置和用户接口说明 |
+| `README.md` / `README.en.md` | 安装、配置和用户接口说明 |
 
 推荐贡献流程：
 

@@ -14,7 +14,7 @@
 
 opencode 插件运行在其内嵌 Bun 运行时内（非系统 Node），因此：
 
-- 只能用 Bun 内建模块（`bun:sqlite`）与纯 JS/WASM 依赖
+- 可用 Bun 内建（如 `bun:sqlite`）及其 Node 兼容内建模块（如 `node:fs`/`node:crypto`）；第三方依赖须为纯 JS/WASM
 - C++ 原生模块（`better-sqlite3`、`sqlite-vec`、`nodejieba`）不可用
 - 中文分词用 jieba-wasm（纯 WASM）
 
@@ -25,15 +25,15 @@ opencode 插件运行在其内嵌 Bun 运行时内（非系统 Node），因此�
 | # | 决策 | 选择 | 状态 |
 |---|------|------|------|
 | D1 | 存储引擎 | SQLite + `bun:sqlite`（内嵌 Bun 无 `node:sqlite`） | 已实现 |
-| D2 | 检索 | FTS5(BM25) 文本检索；向量通道接口化 | 部分（FTS 已实现，向量未实现） |
+| D2 | 检索 | FTS5(BM25) 文本检索；embedding 字段预留 | 部分（FTS 已实现，向量未实现） |
 | D3 | 向量 | BLOB + 内联余弦 | 规划中 |
 | D4 | 嵌入 | 默认关闭，`EmbeddingProvider` 接口 | 规划中 |
 | D5 | 中文分词 | jieba-wasm 预分词写 FTS body | 已实现 |
 | D6 | 上下文注入 | `messages.transform` 消息末尾注入（ephemeral） | 已实现 |
 | D7 | 信任分级 | trust=high/low，入口决定 | 部分（MVP 统一 user/high） |
-| D8 | Pin 策略 | 仅显式 pin；full/summary 双模式 + 配额超额拒绝 | 已实现 |
+| D8 | Pin 策略 | 仅显式 pin；full/summary 双模式 + 按渲染长度配额、`BEGIN IMMEDIATE` 原子校验与更新 | 已实现 |
 | D9 | 作用域 | scope + scope_key | 部分（MVP 仅 global） |
-| D10 | 迁移 | 版本化顺序迁移，每步事务 + 前置校验 | 已实现 |
+| D10 | 迁移 | 版本化顺序迁移；`BEGIN IMMEDIATE` 取写锁后单事务内完成校验/迁移/记录 | 已实现 |
 | D11 | 更新策略 | 元数据专用 UPDATE；内容 CAS 乐观锁 | 已实现 |
 | D12 | 一致性 | 主表 + FTS 同事务；WAL + busy_timeout + 写重试 | 已实现 |
 | D13 | 召回语义 | 无匹配返回空；结果带 id+score | 已实现 |
@@ -73,7 +73,7 @@ opencode 插件运行在其内嵌 Bun 运行时内（非系统 Node），因此�
 | 每轮注入固定记忆 | `experimental.chat.messages.transform`（仅主模型触发、output.messages 带 agent/sessionID） |
 | 压缩时归档 | `session.compacted` 事件 + `client.session.messages` 读产物 |
 | 主动读写工具 | plugin `tool: { ... }`（zod 定义参数） |
-| 配置 | `opencode.json` → `plugin: [["opencode-memory", {...}]]` |
+| 配置 | `opencode.json` → `plugin: [["@aifcoding/opencode-memory", {...}]]` |
 
 ## 数据模型
 
@@ -98,11 +98,11 @@ CREATE TABLE memories (
   embedding     BLOB,                       -- 可空（未向量化）
   embed_model   TEXT,
   embed_dim     INTEGER,
-  content_hash  TEXT NOT NULL,              -- SHA256，规范化去重
+  content_hash  TEXT NOT NULL,              -- 原始 content 的 SHA-256，用于同作用域精确去重
   revision      INTEGER NOT NULL DEFAULT 1, -- 乐观锁（CAS 更新）
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
-  deleted_at    INTEGER,                    -- 软删可恢复
+  deleted_at    INTEGER,                    -- 软删（存储层支持恢复，公开工具未暴露）
   CHECK(scope    IN ('global','user','project','session')),
   CHECK(origin   IN ('user','agent','compact')),
   CHECK(trust    IN ('high','low')),
@@ -149,8 +149,8 @@ query
 ```
 
 - 无 query 或无匹配 → 返回空（绝不回退最新）
-- 结果带 id + score，可继续 read/update/forget/pin
-- 中文检索用 jieba 预分词写 FTS body + unicode61；trigram 对 2 字词失效，仅作英文兜底
+- 结果带 id + score，可继续 read/forget/pin（update 为存储层能力，公开工具未暴露）
+- 中文检索用 jieba 预分词写 FTS body + unicode61
 - 当前仅单通道 FTS5 文本检索；向量检索为规划中（数据模型已预留 embedding 字段）
 
 ## 写入与生命周期
@@ -175,7 +175,7 @@ query
 
 当前面向单用户本地环境。已实现的安全性质：
 
-1. **指令/数据分离**：记忆以 reference 块注入，明确"不覆盖当前指令与安全策略"
+1. **参考块标记**：记忆以 reference 块注入，并提示模型视为参考数据；该标记是模型侧提示，不构成对提示注入的机制防护
 2. **注入隔离**：固定记忆由 `memory_pin` 显式指定，非固定内容不自动注入
 3. **无动态 SQL**：过滤用结构化参数，LLM 不接触 SQL 文本
 4. **软删与去重**：删除为软删（不参与检索），`(scope, scope_key, content_hash)` 去重
@@ -186,13 +186,12 @@ query
 - 未做 secret 检测（token/api key/.env）与日志脱敏
 - 召回/固定的内容会进入模型上下文；若使用远程模型提供商，内容可能随请求发送给该提供商
 
-## 测试策略
+## 测试现状
 
-| 层 | 内容 |
-|---|---|
-| 存储 | CRUD、软删去重、FTS 同步原子性、元数据更新不清 embedding、CAS 冲突 |
-| 迁移 | 顺序升级、失败即停、幂等 |
-| 检索 | 中文召回（2 字词、标识符）、无匹配返空、scope 过滤、排序 |
-| 并发 | 多写入者无 `database is locked` |
-| 注入 | overlay 内容、信任分级、撤回语义、ephemeral |
-| 集成 | 真实 opencode 会话端到端 |
+已自动覆盖（`bun test`）：
+
+- 存储：CRUD、软删去重、FTS 同步、元数据更新不清 embedding、CAS 冲突、归档幂等
+- 检索：中文召回（2 字词/标识符）、无匹配返空、scope 过滤、排序
+- plugin：store/recall 往返、软删拒绝、pin 配额、重新 pin 不重复计算、compaction event 提取与幂等归档
+
+尚未自动覆盖：并发迁移/写入、overlay 消息结构、真实 OpenCode compaction 端到端、配置错误分支（部分运行时链路曾通过 spike 手动验证）。

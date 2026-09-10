@@ -15,17 +15,17 @@ It gives AI agents memory across three tiers — **long-term knowledge, episodic
 - **Three-tier memory model**
   - Long-term knowledge: preferences, facts, decisions, solutions, and conventions
   - Episodic summaries: session compaction summaries, auto-archived and searchable across sessions
-  - Session working memory: a temporary key-value store scoped to the current session
+  - Session working memory: a persistent key-value store scoped by `sessionID` (no auto-cleanup in the current version)
 - **Fully local**: built on `bun:sqlite`; storage, tokenization, and retrieval all run on your machine
 - **Zero external services**: no cloud database, no embedding API, no separate search service
 - **Chinese-friendly search**: `jieba-wasm` tokenization with FTS5 BM25 ranking
-- **Identifier-aware search**: preserves tokens like `foo_bar` and `CamelCase`
+- **Identifier-aware search**: `CamelCase` is split into words, while underscore identifiers like `foo_bar` are preserved as whole tokens
 - **Pinned-memory injection**: chosen memories are injected into every turn automatically
 - **Non-persistent injection**: injected content is never written into message history; changes take effect on the next turn
 - **Full & summary pin modes**: pin a memory as `full` or `summary`
 - **Auto-archive on compaction**: listens for `session.compacted` and idempotently stores the summary
 - **Soft delete & deduplication**: deleted memories are excluded from lists and search
-- **Single-file database**: WAL, write retries, and versioned migrations
+- **Local SQLite database**: WAL, write retries, and versioned migrations (may create `-wal`/`-shm` sidecar files while running)
 
 ## Three-tier memory model
 
@@ -33,33 +33,25 @@ It gives AI agents memory across three tiers — **long-term knowledge, episodic
 |---|---|---|---|---|
 | Long-term knowledge | `memories` | Persistent across sessions | Preferences, environment facts, architecture decisions, lessons learned, conventions | `memory_*` |
 | Episodic summaries | `session_summaries` | Auto-archived on session compaction | A past session's goals, progress, conclusions, and open items | `recall_summaries` |
-| Session working memory | `session_kv` | Current session only | Ticket numbers, temporary constraints, intermediate state | `kv_*` |
+| Session working memory | `session_kv` | Scoped by `sessionID` (persistent) | Ticket numbers, temporary constraints, intermediate state | `kv_*` |
 
 Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowledge: `memory_pin` marks a long-term memory to be injected into every turn.
 
 ## Quick start
 
-### 1. Clone and install dependencies
+### 1. Register the plugin (npm)
 
-```bash
-git clone https://github.com/aifcoding/opencode-memory.git
-cd opencode-memory
-bun install
-```
-
-### 2. Register the plugin
-
-Add the plugin's absolute path to your OpenCode config (`opencode.json` or `opencode.jsonc`):
+Add the package to your OpenCode config (`opencode.json` or `opencode.jsonc`):
 
 ```jsonc
 {
-  "plugin": [
-    "/absolute/path/to/opencode-memory/plugin.ts"
-  ]
+  "plugin": ["@aifcoding/opencode-memory"]
 }
 ```
 
-### 3. Restart OpenCode
+OpenCode installs and caches npm plugins with Bun at startup.
+
+### 2. Restart OpenCode
 
 The plugin is loaded when you see a log line like:
 
@@ -67,7 +59,7 @@ The plugin is loaded when you see a log line like:
 [opencode-memory] loaded, db=/Users/you/.local/share/opencode/memory/memory.db
 ```
 
-### 4. Store your first memory
+### 3. Store your first memory
 
 Just tell OpenCode in plain language:
 
@@ -83,13 +75,30 @@ The plugin calls `memory_store` and replies with something like:
 
 ## Installation
 
-### Prerequisites
+### Use from npm (recommended)
 
-- A working [OpenCode](https://opencode.ai/) installation
-- [Bun](https://bun.sh/) for installing dependencies and running tests
-- Git
+```jsonc
+{
+  "plugin": ["@aifcoding/opencode-memory"]
+}
+```
 
-### Install from a local path
+With plugin options (these take precedence over the standalone config file):
+
+```jsonc
+{
+  "plugin": [
+    ["@aifcoding/opencode-memory", {
+      "dbPath": "/Users/you/.local/share/opencode/memory/memory.db",
+      "pinQuota": 8000
+    }]
+  ]
+}
+```
+
+### Build from source
+
+Prerequisites: [OpenCode](https://opencode.ai/), [Bun](https://bun.sh/), and Git.
 
 ```bash
 git clone https://github.com/aifcoding/opencode-memory.git
@@ -123,18 +132,20 @@ Restart OpenCode after changing the config.
 
 ## Configuration
 
-Configuration is provided via a standalone file `~/.config/opencode/opencode-memory.jsonc` (or `.json`; optional, defaults apply when absent):
+Configuration is provided via plugin tuple options or a standalone file `~/.config/opencode/opencode-memory.jsonc` (or `.json`); options take precedence. Validation is strict: unknown fields fail startup, and `dbPath` must be an absolute path (the config directory honors `XDG_CONFIG_HOME`):
 
 | Option | Type | Default | Unit | Description |
 |---|---|---:|---|---|
 | `dbPath` | `string` | `$HOME/.local/share/opencode/memory/memory.db` | path | SQLite database location (under the same root as OpenCode's session database); parent directories are created automatically |
-| `pinQuota` | `number` | `8000` | characters | Total injection budget for all pinned memories; new pins are rejected when exceeded |
+| `pinQuota` | `number` | `8000` | characters | Total budget for all pinned memories, measured by final rendered text length; new pins are rejected when exceeded |
 
 The current version stores long-term memories under the `global/default` scope, so different projects share one long-term memory pool. Session KV stays isolated by OpenCode's `sessionID`.
 
 ## Usage examples
 
 These prompts can be pasted directly into an OpenCode conversation. The model calls the relevant tool as needed.
+
+> Note: tool descriptions and user-facing tool results are currently emitted in Simplified Chinese. English localization is not yet implemented.
 
 ### Store long-term knowledge
 
@@ -252,7 +263,7 @@ Only sessions that have been compacted and successfully archived appear in episo
 
 ### Use session working memory
 
-Store temporary, session-scoped info:
+Store session-scoped info:
 
 ```text
 把当前需求编号 DEV-2048 存到会话工作记忆，键名使用 ticket。
@@ -276,7 +287,7 @@ Delete:
 删除会话工作记忆中的 ticket。
 ```
 
-These keys are scoped to the current `sessionID`; they do not participate in long-term search or injection.
+These keys are scoped by `sessionID` and persist (no auto-cleanup in the current version); they do not participate in long-term search or injection.
 
 ## Tool reference
 
@@ -345,7 +356,7 @@ Characteristics:
 - Chinese content is tokenized with jieba before indexing
 - Queries use the same tokenization pipeline
 - Two-character Chinese words are recalled independently
-- ASCII identifiers are split on underscores and CamelCase
+- CamelCase identifiers are split into searchable words, while underscore identifiers like `foo_bar` are preserved as whole tokens
 - Returns empty when nothing matches
 - The current implementation is single-channel FTS5 text retrieval; the data model reserves an embedding field, but vector retrieval is not yet implemented
 
@@ -375,7 +386,7 @@ Characteristics:
 Pinned memories are appended to the end of messages through OpenCode's `experimental.chat.messages.transform` extension point:
 
 - Injected as reference information only
-- Never overrides the current instruction or safety policy
+- The injected block is marked as reference data with a hint to treat it as reference, not instruction; this is a model-facing hint, not a security boundary against prompt injection
 - Not written into persistent message history
 - Changes or unpins take effect on the next turn
 - `summary` mode injects the summary; `full` mode injects the content
@@ -406,6 +417,7 @@ opencode-memory/
 │   └── ARCHITECTURE.md
 ├── src/
 │   ├── types.ts
+│   ├── render.ts
 │   └── storage/
 │       ├── MemoryStore.ts
 │       ├── SqliteMemoryStore.ts
@@ -414,7 +426,8 @@ opencode-memory/
 │       └── capability.ts
 ├── tests/
 │   ├── memory-store.test.ts
-│   └── retrieval.test.ts
+│   ├── retrieval.test.ts
+│   └── plugin.test.ts
 └── openspec/
     └── specs/
         ├── memory-storage/spec.md
@@ -458,7 +471,7 @@ The project uses OpenSpec to maintain behavioral specs. Behavior changes should 
 |---|---|
 | `openspec/specs/` | Public behavior and acceptance scenarios |
 | `docs/ARCHITECTURE.md` | Architecture design and decision log |
-| `README.md` | Installation, configuration, and user-facing interface |
+| `README.md` / `README.en.md` | Installation, configuration, and user-facing interface |
 
 Recommended flow:
 

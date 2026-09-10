@@ -39,15 +39,15 @@ pin SHALL 支持 full（注入全文）与 summary（注入一行摘要）两种
 
 ### Requirement: 配额（超额拒绝）
 
-固定记忆注入总量 SHALL 有上限；超额时拒绝新的 pin，不隐式淘汰已有固定。
+固定记忆按最终渲染文本计算的注入总量 SHALL 有上限；超额时拒绝新的 pin，不隐式淘汰已有固定。
 
 #### Scenario: 超额拒绝
 - **WHEN** 固定新记忆会导致注入总量超过配额
 - **THEN** 拒绝并提示改 summary 模式或先取消其他固定
 
-### Requirement: list_pins
+### Requirement: memory_pins
 
-系统 SHALL 提供列出当前固定记忆的能力。
+系统 SHALL 提供 `memory_pins` 工具，用于列出当前固定记忆。
 
 #### Scenario: 查看固定列表
 - **WHEN** 用户请求查看固定记忆
