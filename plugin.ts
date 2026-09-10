@@ -1,7 +1,8 @@
 import { z } from "zod";
 import { join, isAbsolute } from "node:path";
 import { readFileSync } from "node:fs";
-import { parse as parseJsonc, printParseErrorCode } from "jsonc-parser";
+import { parse as parseJsonc, printParseErrorCode, type ParseError } from "jsonc-parser";
+import type { Plugin, PluginInput, ToolContext } from "@opencode-ai/plugin";
 import { SqliteMemoryStore } from "./src/storage/SqliteMemoryStore";
 import { renderPinnedBlock } from "./src/render";
 
@@ -41,14 +42,17 @@ function readConfigFile(): Record<string, unknown> {
     let raw: string;
     try {
       raw = readFileSync(p, "utf8");
-    } catch (e: any) {
-      if (e?.code === "ENOENT") continue; // 文件不存在，尝试下一个
-      throw new Error(`[opencode-memory] failed to read config ${p}: ${e?.message}`);
+    } catch (e) {
+      if ((e as { code?: string })?.code === "ENOENT") continue; // 文件不存在，尝试下一个
+      throw new Error(`[opencode-memory] failed to read config ${p}: ${(e as Error)?.message}`);
     }
-    const errors: unknown[] = [];
+    const errors: ParseError[] = [];
     const parsed = parseJsonc(raw, errors);
     if (errors.length > 0) {
-      throw new Error(`[opencode-memory] failed to parse config ${p}: ${printParseErrorCode((errors[0] as any)?.error)}`);
+      throw new Error(`[opencode-memory] failed to parse config ${p}: ${printParseErrorCode(errors[0].error)}`);
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      throw new Error(`[opencode-memory] failed to parse config ${p}: expected an object`);
     }
     return parsed as Record<string, unknown>;
   }
@@ -56,23 +60,24 @@ function readConfigFile(): Record<string, unknown> {
 }
 
 // 通过 opencode 官方 app.log 写服务端日志，避免 console.* 污染 TUI 消息区
-function logError(client: any, message: string, e: unknown) {
-  try {
-    client?.app?.log?.({
+function logError(client: PluginInput["client"], message: string, e: unknown) {
+  if (!client) return;
+  client.app
+    .log({
       body: {
         service: "opencode-memory",
         level: "error",
         message,
         extra: { error: e instanceof Error ? e.message : String(e) },
       },
+    })
+    .catch(() => {
+      // 日志失败不影响主流程
     });
-  } catch {
-    // 日志失败不影响主流程
-  }
 }
 
-export default async function opencodeMemory(input: any, options: Record<string, unknown> = {}) {
-  const client = input?.client;
+const plugin: Plugin = async (input: PluginInput, options: Record<string, unknown> = {}) => {
+  const client = input.client;
   const fileConfig = readConfigFile();
   // 合并文件配置与 tuple options，统一严格校验（options 覆盖文件配置）
   const config = ConfigSchema.safeParse({ ...fileConfig, ...options });
@@ -211,7 +216,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
       kv_set: {
         description: "存一个会话级键值（仅当前会话可见的临时信息，如某个开发需求的细节）。",
         args: { key: z.string().min(1).describe("键"), value: z.string().describe("值") },
-        async execute(args: { key: string; value: string }, context: any) {
+        async execute(args: { key: string; value: string }, context: ToolContext) {
           store.setKv(context.sessionID, args.key, args.value);
           return `已存 kv: ${args.key}`;
         },
@@ -220,7 +225,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
       kv_get: {
         description: "读会话级键值。",
         args: { key: z.string().min(1).describe("键") },
-        async execute(args: { key: string }, context: any) {
+        async execute(args: { key: string }, context: ToolContext) {
           const v = store.getKv(context.sessionID, args.key);
           return v ?? `（无 ${args.key}）`;
         },
@@ -229,7 +234,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
       kv_list: {
         description: "列出当前会话的所有键值。",
         args: {},
-        async execute(_args: {}, context: any) {
+        async execute(_args: {}, context: ToolContext) {
           const all = store.listKv(context.sessionID);
           const keys = Object.keys(all);
           if (keys.length === 0) return "（空）";
@@ -240,14 +245,14 @@ export default async function opencodeMemory(input: any, options: Record<string,
       kv_del: {
         description: "删除会话级键值。",
         args: { key: z.string().min(1).describe("键") },
-        async execute(args: { key: string }, context: any) {
+        async execute(args: { key: string }, context: ToolContext) {
           return store.deleteKv(context.sessionID, args.key) ? `已删 ${args.key}` : `（无 ${args.key}）`;
         },
       },
     },
 
     // overlay 自动注入：固定记忆塞进消息末尾（ephemeral，仅主模型，不落历史）
-    "experimental.chat.messages.transform": async (_input: any, output: any) => {
+    "experimental.chat.messages.transform": async (_input, output) => {
       try {
         if (!Array.isArray(output?.messages) || output.messages.length === 0) return;
         const pinned = store.listPinned(SCOPE, SCOPE_KEY);
@@ -261,7 +266,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
             role: "user",
             sessionID: sessionId,
             time: { created: Date.now() },
-          },
+          } as any, // 合成注入消息，非真实 agent/model，运行时 opencode 不要求这两个字段
           parts: [
             {
               type: "text",
@@ -278,17 +283,18 @@ export default async function opencodeMemory(input: any, options: Record<string,
     },
 
     // 自动归档：会话压缩后，把 compaction 摘要存入情景记忆（session_summaries）
-    event: async ({ event }: any) => {
-      if (event?.type !== "session.compacted") return;
+    event: async ({ event }) => {
+      if (event.type !== "session.compacted") return;
       const sid = event.properties?.sessionID;
       if (!sid || !client) return;
       try {
         const m = await client.session.messages({ path: { id: sid } });
         const messages = m?.data ?? [];
         for (const msg of messages) {
-          if (msg?.info?.agent === "compaction" || msg?.info?.mode === "compaction") {
-            const textPart = (msg.parts ?? []).find((p: any) => p.type === "text");
-            if (textPart?.text) {
+          const info = msg.info as { agent?: string; mode?: string };
+          if (info.agent === "compaction" || info.mode === "compaction") {
+            const textPart = (msg.parts ?? []).find((p) => p.type === "text");
+            if (textPart && textPart.type === "text" && textPart.text) {
               store.archiveSummary({
                 id: msg.info.id,
                 sessionId: sid,
@@ -307,4 +313,6 @@ export default async function opencodeMemory(input: any, options: Record<string,
       store.close();
     },
   };
-}
+};
+
+export default plugin;

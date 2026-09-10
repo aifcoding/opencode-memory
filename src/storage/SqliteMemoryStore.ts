@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -60,8 +60,8 @@ function mapRow(r: Row): MemoryEntry {
 }
 
 const isBusy = (e: unknown) => {
-  const code = String((e as any)?.code ?? "");
-  const msg = String((e as any)?.message ?? "");
+  const code = String((e as { code?: unknown })?.code ?? "");
+  const msg = String((e as { message?: unknown })?.message ?? "");
   return /SQLITE_BUSY|SQLITE_LOCKED/i.test(code) || /locked|busy/i.test(msg);
 };
 
@@ -140,7 +140,7 @@ export class SqliteMemoryStore implements MemoryStore {
   updateMeta(id: number, patch: MetaPatch): MemoryEntry | null {
     const touchesFts = patch.title !== undefined || patch.summary !== undefined;
     const cols: string[] = [];
-    const vals: unknown[] = [];
+    const vals: SQLQueryBindings[] = [];
     if (patch.title !== undefined) { cols.push("title = ?"); vals.push(patch.title); }
     if (patch.summary !== undefined) { cols.push("summary = ?"); vals.push(patch.summary); }
     if (patch.type !== undefined) { cols.push("type = ?"); vals.push(patch.type); }
@@ -212,7 +212,7 @@ export class SqliteMemoryStore implements MemoryStore {
 
   listByScope(scope: Scope, scopeKey: string, opts?: { type?: string; limit?: number }): MemoryEntry[] {
     let sql = `SELECT * FROM memories WHERE scope = ? AND scope_key = ? AND deleted_at IS NULL`;
-    const vals: unknown[] = [scope, scopeKey];
+    const vals: SQLQueryBindings[] = [scope, scopeKey];
     if (opts?.type) { sql += " AND type = ?"; vals.push(opts.type); }
     sql += " ORDER BY updated_at DESC";
     if (opts?.limit) { sql += " LIMIT ?"; vals.push(opts.limit); }
@@ -269,7 +269,7 @@ export class SqliteMemoryStore implements MemoryStore {
                FROM memories_fts
                JOIN memories m ON m.id = memories_fts.id
                WHERE memories_fts MATCH ?`;
-    const params: unknown[] = [match];
+    const params: SQLQueryBindings[] = [match];
     if (opts?.scope) { sql += " AND m.scope = ?"; params.push(opts.scope); }
     if (opts?.scopeKey) { sql += " AND m.scope_key = ?"; params.push(opts.scopeKey); }
     sql += " AND m.deleted_at IS NULL ORDER BY bm25(memories_fts) LIMIT ?";

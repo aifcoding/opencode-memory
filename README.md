@@ -444,6 +444,12 @@ opencode-memory/
 bun install
 ```
 
+类型检查：
+
+```bash
+bun run typecheck
+```
+
 运行测试：
 
 ```bash

@@ -1,6 +1,6 @@
 {
   "name": "@aifcoding/opencode-memory",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "opencode 本地持久记忆插件：三层记忆（长期知识/情景摘要/会话工作记忆），纯本地 SQLite + jieba 中文检索",
   "type": "module",
   "main": "dist/plugin.js",
@@ -25,8 +25,9 @@
   ],
   "scripts": {
     "test": "bun test",
+    "typecheck": "tsc --noEmit",
     "build": "bun build plugin.ts --outdir dist --target bun --external jieba-wasm --external zod --external jsonc-parser",
-    "prepublishOnly": "bun test && bun run build"
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "publishConfig": {
     "access": "public"
@@ -34,6 +35,11 @@
   "dependencies": {
     "jieba-wasm": "^2.4.0",
     "jsonc-parser": "^3.3.1",
-    "zod": "^4.5.4"
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.30",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
   }
 }

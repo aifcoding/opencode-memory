@@ -444,6 +444,12 @@ Install dependencies:
 bun install
 ```
 
+Type-check:
+
+```bash
+bun run typecheck
+```
+
 Run tests:
 
 ```bash
