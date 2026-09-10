@@ -1,7 +1,5 @@
 import { cut } from "jieba-wasm";
 
-let jiebaWarned = false;
-
 // 中文用 jieba 分词；ASCII 标识符按 camelCase/下划线细分保留，避免被 jieba 拆散或与中文粘连。
 export function tokenize(text: string): string {
   const words: string[] = [];
@@ -26,10 +24,7 @@ export function tokenize(text: string): string {
           if (t) words.push(t);
         }
       } catch {
-        if (!jiebaWarned) {
-          jiebaWarned = true;
-          console.error("[opencode-memory] jieba tokenization failed; falling back to basic tokenization");
-        }
+        // 静默降级到基础分词（底层无 client，避免 console.error 污染 TUI）
         words.push(...chunk.toLowerCase().split(/[\s\p{P}]+/u).filter(Boolean));
       }
     }

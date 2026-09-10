@@ -55,6 +55,22 @@ function readConfigFile(): Record<string, unknown> {
   return {};
 }
 
+// 通过 opencode 官方 app.log 写服务端日志，避免 console.* 污染 TUI 消息区
+function logError(client: any, message: string, e: unknown) {
+  try {
+    client?.app?.log?.({
+      body: {
+        service: "opencode-memory",
+        level: "error",
+        message,
+        extra: { error: e instanceof Error ? e.message : String(e) },
+      },
+    });
+  } catch {
+    // 日志失败不影响主流程
+  }
+}
+
 export default async function opencodeMemory(input: any, options: Record<string, unknown> = {}) {
   const client = input?.client;
   const fileConfig = readConfigFile();
@@ -68,7 +84,6 @@ export default async function opencodeMemory(input: any, options: Record<string,
   const dbPath = config.data.dbPath ?? defaultDbPath();
   const pinQuota = config.data.pinQuota ?? PIN_QUOTA_DEFAULT;
   const store = new SqliteMemoryStore(dbPath);
-  console.log(`[opencode-memory] loaded, db=${dbPath}`);
 
   return {
     tool: {
@@ -258,7 +273,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
           ],
         });
       } catch (e) {
-        console.error("[opencode-memory] overlay error:", e);
+        logError(client, "Pinned-memory overlay failed", e);
       }
     },
 
@@ -284,7 +299,7 @@ export default async function opencodeMemory(input: any, options: Record<string,
           }
         }
       } catch (e) {
-        console.error("[opencode-memory] archive error:", e);
+        logError(client, "Session compaction archive failed", e);
       }
     },
 
