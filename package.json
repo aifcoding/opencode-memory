@@ -1,0 +1,14 @@
+{
+  "name": "opencode-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test"
+  },
+  "dependencies": {
+    "jieba-wasm": "^2.4.0",
+    "jsonc-parser": "^3.3.1",
+    "zod": "^4.5.4"
+  }
+}
