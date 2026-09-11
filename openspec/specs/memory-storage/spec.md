@@ -7,7 +7,7 @@
 
 ### Requirement: 记忆条目 CRUD
 
-存储层 SHALL 支持创建、读取、元数据更新、CAS 内容更新、软删除和恢复；插件公开工具集在当前版本仅暴露创建、读取和软删除。字段覆盖 `ARCHITECTURE.md` 数据模型（origin/trust/scope/scope_key/type/content/summary/pin_mode/embedding/embed_model/embed_dim/content_hash/revision/created_at/updated_at/deleted_at）。
+存储层 SHALL 支持创建、读取、元数据更新、CAS 内容更新、软删除和恢复；MemoryManager 提供异步的应用级创建、读取和删除 API，OpenCode 工具通过 Manager 调用。字段覆盖 `ARCHITECTURE.md` 数据模型。
 
 #### Scenario: 创建条目
 - **WHEN** 调用 create 且 content/scope/scope_key 合法
@@ -51,7 +51,7 @@
 
 ### Requirement: 会话 KV
 
-系统 SHALL 提供 session 级键值存储，`(session_key, kv_key)` 唯一，仅当前会话可见。
+系统 SHALL 通过 `contextKey` 提供上下文级键值存储，底层 `(session_key, kv_key)` 唯一；Adapter 负责映射宿主身份。
 
 #### Scenario: upsert 与清理
 - **WHEN** kv_set 同 key 重复写入
@@ -76,3 +76,8 @@
 ### Requirement: 配置
 
 配置 SHALL 从 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`）读取，`.jsonc` 优先；文件不存在可忽略，读取或解析错误必须显式报错。文件配置与插件 options 走同一 Zod Schema，options 覆盖文件配置；`dbPath` 须为绝对路径，`pinQuota` 须为正整数。
+
+#### Scenario: 配置职责分离
+
+- **WHEN** 插件启动
+- **THEN** Adapter 完成读取、合并和严格校验，再使用结果创建 MemoryManager

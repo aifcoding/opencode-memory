@@ -1,0 +1,38 @@
+{
+  "name": "@aifcoding/opencode-memory",
+  "version": "0.1.3",
+  "description": "opencode 本地持久记忆插件",
+  "type": "module",
+  "main": "dist/plugin.js",
+  "module": "dist/plugin.js",
+  "exports": {
+    "import": "./dist/plugin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aifcoding/opencode-memory.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@aifcoding/memory-core": "^0.1.0",
+    "jsonc-parser": "^3.3.1",
+    "zod": "4.1.8"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.30",
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/plugin.ts --outdir dist --target bun --external @aifcoding/memory-core --external jieba-wasm --external zod --external jsonc-parser",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+  }
+}

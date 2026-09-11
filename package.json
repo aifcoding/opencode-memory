@@ -1,13 +1,11 @@
 {
-  "name": "@aifcoding/opencode-memory",
+  "name": "opencode-memory-monorepo",
   "version": "0.1.2",
   "description": "opencode 本地持久记忆插件：三层记忆（长期知识/情景摘要/会话工作记忆），纯本地 SQLite + jieba 中文检索",
   "type": "module",
-  "main": "dist/plugin.js",
-  "module": "dist/plugin.js",
-  "exports": "./dist/plugin.js",
-  "files": [
-    "dist"
+  "private": true,
+  "workspaces": [
+    "packages/*"
   ],
   "license": "MIT",
   "repository": {
@@ -24,22 +22,17 @@
     "ai"
   ],
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "build": "bun build plugin.ts --outdir dist --target bun --external jieba-wasm --external zod --external jsonc-parser",
+    "test": "bun test packages/core/tests packages/opencode/tests",
+    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd packages/opencode typecheck",
+    "build": "bun run --cwd packages/core build && bun run --cwd packages/opencode build",
+    "format": "biome format --write packages/core/src packages/core/tests packages/opencode/src packages/opencode/tests examples package.json tsconfig.base.json biome.json",
+    "format:check": "biome format packages/core/src packages/core/tests packages/opencode/src packages/opencode/tests examples package.json tsconfig.base.json biome.json",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {
-    "jieba-wasm": "^2.4.0",
-    "jsonc-parser": "^3.3.1",
-    "zod": "4.1.8"
-  },
   "devDependencies": {
-    "@opencode-ai/plugin": "1.18.30",
-    "@types/bun": "^1.4.2",
-    "typescript": "^7.0.2"
+    "@biomejs/biome": "2.5.13"
   }
 }

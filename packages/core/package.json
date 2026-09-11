@@ -1,0 +1,47 @@
+{
+  "name": "@aifcoding/memory-core",
+  "version": "0.1.0",
+  "description": "Framework-independent memory storage primitives",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./sqlite": {
+      "types": "./dist/sqlite/index.d.ts",
+      "import": "./dist/sqlite/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aifcoding/opencode-memory.git"
+  },
+  "keywords": [
+    "ai",
+    "memory",
+    "core",
+    "sqlite",
+    "retrieval"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && bun build src/index.ts src/sqlite/index.ts --outdir dist --target bun --external jieba-wasm && tsc -p tsconfig.build.json --declaration --emitDeclarationOnly --noEmit false --outDir dist",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+  },
+  "dependencies": {
+    "jieba-wasm": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

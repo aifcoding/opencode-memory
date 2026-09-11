@@ -7,7 +7,7 @@
 
 ### Requirement: 固定记忆每轮注入
 
-已固定的记忆 SHALL 在每次主模型调用时自动注入上下文，注入内容不写入消息历史（ephemeral，改/删后下一轮生效）。
+Core SHALL 负责固定生命周期、配额和通用参考文本渲染；OpenCode Adapter SHALL 在每次主模型调用时 ephemeral 注入，且不写入消息历史。
 
 #### Scenario: 跨会话持续注入
 - **WHEN** 某记忆已固定，用户在任意新会话对话

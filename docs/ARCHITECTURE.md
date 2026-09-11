@@ -1,6 +1,6 @@
 # opencode-memory 架构设计
 
-给 opencode（AI 编码工具）用的本地持久记忆插件。三层记忆模型（长期知识 / 情景摘要 / 会话工作记忆），纯本地（SQLite + jieba-wasm），零外部服务。
+本地优先的通用 AI 记忆内核，以及基于它的 OpenCode 适配器。三层记忆模型（长期知识 / 情景摘要 / 会话工作记忆），纯本地（SQLite + jieba-wasm），零外部服务。
 
 ## 设计目标
 
@@ -12,11 +12,12 @@
 
 ## 运行时约束
 
-opencode 插件运行在其内嵌 Bun 运行时内（非系统 Node），因此：
+运行时边界分为四类：
 
-- 可用 Bun 内建（如 `bun:sqlite`）及其 Node 兼容内建模块（如 `node:fs`/`node:crypto`）；第三方依赖须为纯 JS/WASM
-- C++ 原生模块（`better-sqlite3`、`sqlite-vec`、`nodejieba`）不可用
-- 中文分词用 jieba-wasm（纯 WASM）
+- **Core 根入口**：不加载 `bun:sqlite`，只提供框架无关 API。
+- **SQLite 子路径**：`@aifcoding/memory-core/sqlite` 使用 `bun:sqlite`，要求 Bun；第三方依赖须为纯 JS/WASM。
+- **OpenCode Adapter**：运行于 OpenCode 内嵌 Bun（非系统 Node），不可使用 C++ 原生模块（如 `better-sqlite3`、`sqlite-vec`、`nodejieba`）。
+- **自定义 MemoryStore**：由宿主决定运行时和存储实现，Core 只依赖 `MemoryStore` 端口。
 
 ## 决策记录
 
@@ -28,7 +29,7 @@ opencode 插件运行在其内嵌 Bun 运行时内（非系统 Node），因此�
 | D2 | 检索 | FTS5(BM25) 文本检索；embedding 字段预留 | 部分（FTS 已实现，向量未实现） |
 | D3 | 向量 | BLOB + 内联余弦 | 规划中 |
 | D4 | 嵌入 | 默认关闭，`EmbeddingProvider` 接口 | 规划中 |
-| D5 | 中文分词 | jieba-wasm 预分词写 FTS body | 已实现 |
+| D5 | 分词 | 单方法 `Tokenizer` 接口；默认 jieba-wasm；写入和查询共用同一实例 | 已实现 |
 | D6 | 上下文注入 | `messages.transform` 消息末尾注入（ephemeral） | 已实现 |
 | D7 | 信任分级 | trust=high/low，入口决定 | 部分（MVP 统一 user/high） |
 | D8 | Pin 策略 | 仅显式 pin；full/summary 双模式 + 按渲染长度配额、`BEGIN IMMEDIATE` 原子校验与更新 | 已实现 |
@@ -40,31 +41,48 @@ opencode 插件运行在其内嵌 Bun 运行时内（非系统 Node），因此�
 | D14 | 多源检索缝 | 只读 `MemorySource[]` fan-out | 规划中 |
 | D15 | 身份键 | project 用 `realpath`/安装 UUID | 规划中 |
 
-**已实现的核心**：`bun:sqlite` 存储、jieba-wasm + FTS5 单通道检索、`messages.transform` 末尾注入、显式 pin + 配额、软删去重、CAS 乐观锁、WAL + 写重试、顺序迁移。
+**Core 已实现**：MemoryManager、MemoryStore 端口、Tokenizer 注入、SQLite/FTS5 存储与检索、显式 pin + 配额、软删去重、CAS 乐观锁、WAL + 写重试、顺序迁移。
 
-**规划中（数据模型已预留字段，代码未实现）**：向量检索/内联余弦、`EmbeddingProvider`、`TokenizerProvider`、多源 `MemorySource[]`、project 身份键隔离、严格信任分级。
+**OpenCode Adapter 已实现**：`messages.transform` 末尾注入、12 个工具和 `session.compacted` 摘要归档。
+
+**规划中（数据模型已预留字段，代码未实现）**：向量检索/内联余弦、`EmbeddingProvider`、Tokenizer 身份持久化和兼容检测、多源 `MemorySource[]`、project 身份键隔离、严格信任分级，以及 MCP、CLI 等新的 Core 适配器。自动索引重建尚未决定；当前已实现单方法 `Tokenizer` 注入，默认实现为 jieba-wasm。
 
 ## 总体架构
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ 领域接口                                                      │
-│   MemoryStore（存储层接口）                                   │
+│ Core：@aifcoding/memory-core                                  │
+│ domain（类型/结果）                                           │
+│ application（MemoryManager 高层领域入口）                     │
+│ ports（MemoryStore 端口）                                     │
+│ retrieval / render（检索与通用 Pin 文本渲染）                  │
+│ sqlite（bun:sqlite 实现，独立 /sqlite 导出）                   │
 ├──────────────────────────────────────────────────────────────┤
-│ 基础设施实现                                                   │
-│   SqliteMemoryStore (bun:sqlite)   tokenize (jieba-wasm)     │
-│   migrations (版本化顺序)                                      │
-├──────────────────────────────────────────────────────────────┤
-│ opencode 集成层                                                │
-│   plugin.ts：注册 tools / hooks                               │
-│   overlay 注入 (messages.transform 末尾)                       │
-│   compaction 归档 (session.compacted 事件 + SDK 读产物)        │
-├──────────────────────────────────────────────────────────────┤
-│ 对外接口：自定义工具 + 配置文件                                 │
+│ Adapter：@aifcoding/opencode-memory                           │
+│ plugin.ts：配置、12 个工具、overlay、compaction 事件           │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-依赖方向：集成层 → 基础设施 → 领域层。
+依赖方向：OpenCode Adapter → Core；Core 不依赖 OpenCode。`MemoryManager` 负责默认作用域、输入校验、删除状态、Pin 配额和结构化结果；`MemoryStore` 只负责持久化原语、检索和事务一致性。
+
+Core 根入口不加载 `bun:sqlite`；需要 SQLite 时使用 `@aifcoding/memory-core/sqlite`。该子路径仍要求 Bun。
+
+### Monorepo 包结构
+
+```text
+packages/core/
+├── src/domain       # 领域类型与结构化结果
+├── src/application  # MemoryManager
+├── src/ports        # MemoryStore 存储端口
+├── src/retrieval    # Tokenizer 接口与默认 jieba 实现
+├── src/render       # Pin 文本渲染
+└── src/sqlite       # SQLite 实现与迁移
+
+packages/opencode/
+└── src/plugin.ts    # OpenCode 配置、工具与事件适配
+```
+
+`MemoryManager` 是 Core 的统一高层入口，所有公共方法使用对象参数并返回 Promise；Adapter 负责把结构化结果转换为 OpenCode 工具文案和消息结构。
 
 ### opencode 扩展点映射
 
@@ -83,10 +101,10 @@ PRAGMA busy_timeout=5000;
 
 -- 长期记忆
 CREATE TABLE memories (
-  id            INTEGER PRIMARY KEY,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
   scope         TEXT NOT NULL,              -- global|user|project|session
   scope_key     TEXT NOT NULL,              -- 规范化项目路径 / 用户标识 / session id
-  origin        TEXT NOT NULL,              -- user|agent|compact（入口决定，调用者不可传）
+  origin        TEXT NOT NULL,              -- user|agent|compact（OpenCode 工具调用者不可传；可信 Core SDK 可传，Adapter 负责入口信任策略）
   trust         TEXT NOT NULL DEFAULT 'low',-- D7：入口决定；默认 low
   title         TEXT NOT NULL,
   content       TEXT NOT NULL,
@@ -151,6 +169,7 @@ query
 - 无 query 或无匹配 → 返回空（绝不回退最新）
 - 结果带 id + score，可继续 read/forget/pin（update 为存储层能力，公开工具未暴露）
 - 中文检索用 jieba 预分词写 FTS body + unicode61
+- 分词器可插件化：`Tokenizer` 接口（默认 jieba-wasm），可在 `createSqliteMemoryManager` 注入自定义实现（英文词干/停用词等）；更换分词器需新建库
 - 当前仅单通道 FTS5 文本检索；向量检索为规划中（数据模型已预留 embedding 字段）
 
 ## 写入与生命周期
@@ -182,16 +201,19 @@ query
 
 边界（当前版本未实现，勿据此做安全承诺）：
 
-- 信任分级为简化实现：工具写入统一标记 `origin=user`、`trust=high`，未做多来源分级与升级审批
+- 信任分级为简化实现：工具写入统一标记 `origin=user`、`trust=high`；Core 已支持 `trust=low` 且低信任内容固定时返回 `trust_denied`，但未做多来源分级与升级审批
 - 未做 secret 检测（token/api key/.env）与日志脱敏
 - 召回/固定的内容会进入模型上下文；若使用远程模型提供商，内容可能随请求发送给该提供商
 
 ## 测试现状
 
-已自动覆盖（`bun test`）：
+已自动覆盖（`bun test`，36 个测试）：
 
 - 存储：CRUD、软删去重、FTS 同步、元数据更新不清 embedding、CAS 冲突、归档幂等
 - 检索：中文召回（2 字词/标识符）、无匹配返空、scope 过滤、排序
-- plugin：store/recall 往返、软删拒绝、pin 配额、重新 pin 不重复计算、compaction event 提取与幂等归档
+- MemoryManager：默认 scope、输入校验、Pin 状态（含 trust_denied）、摘要归档、contextKey KV
+- 依赖边界：Core 不依赖 opencode、adapter 单向依赖 core
+- 可插件分词器：自定义 tokenizer 的写入/查询一致性
+- opencode adapter：store/recall 往返、软删拒绝、pin 配额、compaction event 提取与幂等归档
 
 尚未自动覆盖：并发迁移/写入、overlay 消息结构、真实 OpenCode compaction 端到端、配置错误分支（部分运行时链路曾通过 spike 手动验证）。
