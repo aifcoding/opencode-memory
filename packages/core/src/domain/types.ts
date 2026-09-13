@@ -8,7 +8,7 @@ export interface ScopeRef {
 export const ORIGIN = ['user', 'agent', 'compact'] as const;
 export type Origin = (typeof ORIGIN)[number];
 
-export const TRUST = ['high', 'low'] as const;
+export const TRUST = ['high', 'low', 'unclassified'] as const;
 export type Trust = (typeof TRUST)[number];
 
 export const PIN_MODE = ['full', 'summary'] as const;

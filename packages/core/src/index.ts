@@ -19,6 +19,8 @@ export type {
 } from './ports/MemoryStore.js';
 export { defaultTokenizer, tokenize } from './retrieval/tokenizer.js';
 export type { Tokenizer } from './retrieval/tokenizer.js';
+export { renderPinnedBlock, renderPinnedEntry } from './render/pinned-context.js';
+export { escapeXmlText } from './render/xml.js';
 export { MemoryManager, DEFAULT_PIN_QUOTA } from './application/MemoryManager.js';
 export type {
   ArchiveSummaryInput,

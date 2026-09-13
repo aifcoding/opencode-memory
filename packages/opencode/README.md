@@ -39,6 +39,8 @@ This package is the first adapter for `@aifcoding/memory-core` and provides:
 
 Pinned memories are appended as ephemeral reference context on each turn. Compaction summaries are extracted from `session.compacted` and archived idempotently by message ID. The default database is local SQLite at `$HOME/.local/share/opencode/memory/memory.db`; recalled or pinned content enters the model context and may be sent to a remote provider.
 
+The `<memory-context>` and `<mem_block>` fences are model-side prompts, not a mechanism-level defense against prompt injection.
+
 Tool descriptions and results are currently in Simplified Chinese; English localization is not implemented.
 
 ## 使用示例
