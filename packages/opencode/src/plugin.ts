@@ -10,6 +10,7 @@ import { CAPTURE_PROMPT } from './capture/prompt';
 import { captureOutputSchema } from './capture/schema';
 import { filterCaptureMessages, type RawCaptureMessage } from './capture/filter';
 import { CAPTURE_EXTRACTOR_VERSION } from './capture/extractor';
+import { suggestedDomainHint } from './capture/hint';
 import { checkAndRefresh } from './self-update';
 
 // 默认个人单机：global 作用域单一记忆池，origin=user / trust=high。
@@ -54,15 +55,6 @@ class CaptureExecutionError extends Error {
     super('capture failed');
     this.name = 'CaptureExecutionError';
   }
-}
-
-export function suggestedDomainHint(domain: 'code' | 'user' | 'business' | 'uncertain'): string {
-  return {
-    code: '适合在 OpenCode 中审批',
-    user: '建议交个人 Agent 管理',
-    business: '建议交业务 Agent 管理',
-    uncertain: '请用户判断归属',
-  }[domain];
 }
 
 async function captureSession(

@@ -2,7 +2,8 @@ import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import plugin, { suggestedDomainHint } from '../src/plugin';
+import plugin from '../src/plugin';
+import { suggestedDomainHint } from '../src/capture/hint';
 
 let hooks: any;
 let dir: string;
@@ -14,6 +15,14 @@ test('suggestedDomain hints cover all domains', () => {
   expect(suggestedDomainHint('user')).toContain('个人 Agent');
   expect(suggestedDomainHint('business')).toContain('业务 Agent');
   expect(suggestedDomainHint('uncertain')).toContain('用户判断');
+});
+
+test('plugin module exposes only a default export', async () => {
+  // opencode 的 legacy 插件 loader 会把模块的所有运行时导出都当作插件调用：
+  // plugin.ts 里任何非 default 导出都会让 hooks 数组混入非对象值，触发
+  // "plugin config hook failed: undefined is not an object (evaluating 'N.config')"。
+  const mod = await import('../src/plugin');
+  expect(Object.keys(mod)).toEqual(['default']);
 });
 
 beforeEach(async () => {
