@@ -16,7 +16,8 @@
 |---|---|---|
 | 给 OpenCode 增加记忆 | `@aifcoding/opencode-memory` | 已实现 |
 | 在自己的 Bun/TypeScript 应用中使用 | `@aifcoding/memory-core` | 已实现 |
-| 通过 MCP 或 CLI 使用 | 后续适配器 | 规划中，尚未实现 |
+| 给 Claude Code、Cursor、Hermes 等 MCP 客户端使用 | `@aifcoding/memory-mcp` | 已实现，待发布 |
+| 使用 HTTP/SSE 或 CLI 管理记忆 | 后续能力 | 规划中，尚未实现 |
 
 ## 三层记忆模型
 
@@ -35,6 +36,7 @@
 - **显式 Pin**：full/summary、渲染长度配额和非持久化上下文注入。
 - **自动归档**：OpenCode compaction 摘要自动幂等保存并可跨会话检索。
 - **可复用 Core**：异步 `MemoryManager` 与可注入 `Tokenizer`。
+- **安全辅助提取（默认关闭）**：从会话生成低信任候选，必须人工审批后才成为正式记忆。
 
 ## 快速开始
 
@@ -107,6 +109,23 @@ bun run build
 
 源码构建后注册 `packages/opencode/dist/plugin.js`。
 
+#### 安全辅助记忆提取（可选）
+
+安全辅助记忆提取默认关闭。启用时配置：
+
+```jsonc
+{
+  "capture": {
+    "enabled": true,
+    "onCompaction": true,
+    "agent": "memory-extractor",
+    "maxCandidates": 8
+  }
+}
+```
+
+支持 compaction 成功归档后触发和用户显式调用 `memory_capture` 两种方式。候选固定为 `origin=agent`、`trust=low`、`status=pending`，必须经过 `memory_candidates`、`memory_candidate_read` 和 `memory_candidate_review` 审批。`suggestedDomain`：`code` 适合在 OpenCode 审批，`user` 建议交个人 Agent 管理，`business` 建议交业务 Agent 管理，`uncertain` 请用户判断归属。提取使用空 Session 防递归，并执行凭据、bidi 和不可见 Unicode 扫描。
+
 ## OpenCode 适配器配置
 
 配置来自 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`），`.jsonc` 优先；插件 tuple options 优先于文件配置并进行严格校验。Core 不读取配置文件、XDG 目录或插件 options，只接收 Adapter 传入的已解析配置。
@@ -115,11 +134,19 @@ bun run build
 |---|---|---:|---|
 | `dbPath` | `string` | `$HOME/.local/share/opencode/memory/memory.db` | SQLite 路径，必须为绝对路径 |
 | `pinQuota` | `number` | `8000` | 固定记忆最终渲染文本总字符上限 |
+| `autoUpdate` | `boolean` | `true` | 启动时检查并刷新自身 OpenCode 插件缓存；更新后需重启生效 |
+| `capture.enabled` | `boolean` | `false` | 是否启用安全辅助记忆提取 |
+| `capture.onCompaction` | `boolean` | `true` | 启用后是否在 compaction 归档成功后触发 |
+| `capture.agent` | `string` | 无 | 提取 Agent 名称；启用 capture 时必填 |
+| `capture.maxCandidates` | `number` | `8` | 单次最多生成的候选数量（1..20） |
+
+capture 会增加模型调用成本并处理会话内容；默认关闭，候选审批前不会参与召回、Pin 或注入。
 
 ## 详细文档
 
 - Core API：[`packages/core/README.md`](packages/core/README.md)
 - OpenCode 工具与示例：[`packages/opencode/README.md`](packages/opencode/README.md)
+- MCP 安装、Profile、工具与客户端配置：[`packages/mcp/README.md`](packages/mcp/README.md)
 - 架构设计：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - 未来规划：[`ROADMAP.md`](ROADMAP.md)
 - 行为规格：[`openspec/specs/`](openspec/specs/)
@@ -164,29 +191,46 @@ OpenCode Adapter 在 `session.compacted` 后提取摘要，Core 以消息 ID 幂
 
 ### 数据持久化
 
-数据库包含四张逻辑表：`memories`、`session_summaries`、`session_kv`、`db_migrations`，以及对应 FTS5 虚拟表。SQLite 使用 WAL、5000 ms busy timeout、busy/locked 重试和事务化迁移。
+数据库包含六张普通表：`memories`、`session_summaries`、`session_kv`、`db_migrations`、`memory_capture_runs`、`memory_candidates`，以及正式记忆和情景摘要的 FTS5 虚拟表。候选不进入 FTS。SQLite 使用 WAL、5000 ms busy timeout、busy/locked 重试和事务化迁移。
 
 ## 架构与仓库结构
 
 ### 包与依赖方向
 
 ```text
-OpenCode Adapter → MemoryManager → MemoryStore → SqliteMemoryStore
+OpenCode Adapter ─┐
+                  ├─→ MemoryManager → MemoryStore → SqliteMemoryStore
+MCP Adapter ──────┘
 ```
 
-依赖方向为 `opencode → core` 单向。Core 根入口不加载 `bun:sqlite`；`/sqlite` 入口仍要求 Bun。
+依赖方向保持单向：
+
+```text
+@aifcoding/opencode-memory → @aifcoding/memory-core
+@aifcoding/memory-mcp      → @aifcoding/memory-core
+```
+
+Core 不依赖 OpenCode 或 MCP SDK；Core 根入口不加载 `bun:sqlite`，`/sqlite` 入口仍要求 Bun。
+
+MCP Adapter 使用官方 MCP SDK v2，通过 stdio 向外部 Agent 暴露固定 project Scope 内的记忆。默认 readonly Profile 只提供 `memory_search`、`memory_read` 和 `memory_list`。
 
 ### 目录结构
 
 ```text
-packages/core/       # domain / application / ports / retrieval / render / sqlite
-packages/opencode/   # OpenCode adapter
-examples/             # Core 使用示例
+packages/core/       # 领域 API、MemoryStore、SQLite、检索与 Capture
+packages/opencode/   # OpenCode Adapter
+packages/mcp/        # MCP stdio Adapter
+examples/            # Core 使用示例
 ```
 
 ### 当前边界
 
-MCP、CLI 和向量检索尚未实现；Tokenizer 身份持久化与兼容检测处于规划中，自动索引重建尚未决定。
+- MCP 首版仅支持 stdio，不支持 Streamable HTTP 或 Legacy SSE；一个进程绑定一个固定 project Scope，不支持客户端动态切换项目。
+- MCP readonly 是工具权限只读，不是 SQLite 文件级只读。
+- 当前 OpenCode Adapter 仍可能使用 `global/default`；MCP project Scope 不会自动迁移或读取其他 Scope 的记忆。
+- 向量检索、TeamKbSource、自动项目身份和 HTTP 远程访问尚未实现；CLI 尚未实现。
+- Tokenizer 身份持久化与兼容检测处于规划中，自动索引重建尚未决定。
+- Capture 金标集目前只有 20 个样本，并使用确定性提取器，仅是 deterministic pipeline self-test，不代表真实模型质量。
 
 ## 数据与隐私
 

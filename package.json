@@ -22,11 +22,11 @@
     "ai"
   ],
   "scripts": {
-    "test": "bun test packages/core/tests packages/opencode/tests",
-    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd packages/opencode typecheck",
-    "build": "bun run --cwd packages/core build && bun run --cwd packages/opencode build",
-    "format": "biome format --write packages/core/src packages/core/tests packages/opencode/src packages/opencode/tests examples package.json tsconfig.base.json biome.json",
-    "format:check": "biome format packages/core/src packages/core/tests packages/opencode/src packages/opencode/tests examples package.json tsconfig.base.json biome.json",
+    "test": "bun test packages/core/tests packages/opencode/tests packages/mcp/tests",
+    "typecheck": "bun run --cwd packages/core typecheck && bun run --cwd packages/opencode typecheck && bun run --cwd packages/mcp typecheck",
+    "build": "bun run --cwd packages/core build && bun run --cwd packages/opencode build && bun run --cwd packages/mcp build",
+    "format": "biome format --write packages/core/src packages/core/tests packages/opencode/src packages/opencode/tests packages/mcp/src packages/mcp/tests examples package.json tsconfig.base.json biome.json",
+    "format:check": "biome format packages/core/src packages/core/tests packages/opencode/src packages/opencode/tests packages/mcp/src packages/mcp/tests examples package.json tsconfig.base.json biome.json",
     "prepublishOnly": "bun run typecheck && bun test && bun run build"
   },
   "publishConfig": {

@@ -1,0 +1,23 @@
+{
+  "name": "@aifcoding/memory-mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": { "memory-mcp": "./dist/cli.js" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "README.md", "LICENSE"],
+  "license": "MIT",
+  "publishConfig": { "access": "public" },
+  "dependencies": {
+    "@aifcoding/memory-core": "^0.2.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "jsonc-parser": "^3.3.1",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": { "@types/bun": "^1.4.2", "typescript": "^7.0.2" },
+  "scripts": {
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "build": "rm -rf dist && bun build src/index.ts src/cli.ts --outdir dist --target bun --external @aifcoding/memory-core --external '@aifcoding/memory-core/*' --external jieba-wasm --external @modelcontextprotocol/server --external zod --external jsonc-parser && tsc -p tsconfig.build.json --declaration --emitDeclarationOnly --noEmit false --outDir dist"
+  }
+}

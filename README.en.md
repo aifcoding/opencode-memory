@@ -14,9 +14,10 @@ It gives AI agents memory across three tiers — **long-term knowledge, episodic
 
 | Goal | Package | Status |
 |---|---|---|
-| Add memory to OpenCode | `@aifcoding/opencode-memory` | Implemented |
-| Use it in your own Bun/TypeScript app | `@aifcoding/memory-core` | Implemented |
-| Use it through MCP or CLI | Future adapters | Planned, not implemented |
+| Add persistent memory to OpenCode | `@aifcoding/opencode-memory` | Implemented |
+| Use the headless API from a Bun/TypeScript application | `@aifcoding/memory-core` | Implemented |
+| Connect Claude Code, Cursor, Hermes, or another MCP client | `@aifcoding/memory-mcp` | Implemented, pending release |
+| Use HTTP/SSE or a management CLI | Future capabilities | Planned, not implemented |
 
 ## Three-tier memory model
 
@@ -35,6 +36,7 @@ Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowled
 - **Explicit Pin**: full/summary modes, rendered-size quotas, and non-persistent context injection.
 - **Automatic archiving**: OpenCode compaction summaries are archived idempotently and searchable across sessions.
 - **Reusable Core**: async `MemoryManager` and injectable `Tokenizer`.
+- **Safe assisted capture (disabled by default)**: session-derived low-trust candidates require human approval before becoming formal memories.
 
 ## Quick start
 
@@ -107,6 +109,23 @@ bun run build
 
 Then register `packages/opencode/dist/plugin.js`.
 
+#### Safe assisted memory capture (optional)
+
+Safe assisted capture is disabled by default. Configure it with:
+
+```jsonc
+{
+  "capture": {
+    "enabled": true,
+    "onCompaction": true,
+    "agent": "memory-extractor",
+    "maxCandidates": 8
+  }
+}
+```
+
+It can run after successful compaction archival or through explicit `memory_capture`. Candidates use `origin=agent`, `trust=low`, and `status=pending`, then go through `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`. `suggestedDomain` means code: OpenCode approval; user: personal Agent; business: business Agent; uncertain: user decides. Extraction uses an empty Session and deterministic credential, bidi, and invisible-Unicode scans.
+
 ## OpenCode adapter configuration
 
 Configuration comes from `~/.config/opencode/opencode-memory.jsonc` (or `.json`), with `.jsonc` taking precedence. Plugin tuple options override the file and are strictly validated. Core does not read config files, XDG directories, or plugin options; the adapter passes parsed options to Core.
@@ -115,6 +134,13 @@ Configuration comes from `~/.config/opencode/opencode-memory.jsonc` (or `.json`)
 |---|---|---:|---|
 | `dbPath` | `string` | `$HOME/.local/share/opencode/memory/memory.db` | Absolute SQLite path |
 | `pinQuota` | `number` | `8000` | Total final-rendered character budget for pins |
+| `autoUpdate` | `boolean` | `true` | Check and refresh this adapter's OpenCode cache at startup; restart to apply |
+| `capture.enabled` | `boolean` | `false` | Enable safe assisted memory capture |
+| `capture.onCompaction` | `boolean` | `true` | Trigger after successful compaction archival when enabled |
+| `capture.agent` | `string` | none | Extractor agent; required when enabled |
+| `capture.maxCandidates` | `number` | `8` | Maximum candidates per run (1..20) |
+
+Capture adds model cost and processes session content. It is disabled by default; candidates do not participate in recall, Pin, or injection before approval.
 
 ## Usage examples
 
@@ -160,29 +186,46 @@ After `session.compacted`, the adapter extracts the summary and Core archives it
 
 ### Data persistence
 
-The database has four logical tables: `memories`, `session_summaries`, `session_kv`, and `db_migrations`, plus FTS5 virtual tables. SQLite uses WAL, a 5000 ms busy timeout, busy/locked retries, and transactional migrations.
+The database has six ordinary tables: `memories`, `session_summaries`, `session_kv`, `db_migrations`, `memory_capture_runs`, and `memory_candidates`, plus FTS5 virtual tables for formal memories and summaries. Candidates are not indexed in FTS. SQLite uses WAL, a 5000 ms busy timeout, busy/locked retries, and transactional migrations.
 
 ## Architecture and repository structure
 
 ### Packages and dependency direction
 
 ```text
-OpenCode adapter → MemoryManager → MemoryStore → SqliteMemoryStore
+OpenCode Adapter ─┐
+                  ├─→ MemoryManager → MemoryStore → SqliteMemoryStore
+MCP Adapter ──────┘
 ```
 
-The dependency direction is one-way: `opencode → core`. The Core root entry does not load `bun:sqlite`; the `/sqlite` entry still requires Bun.
+Dependencies remain one-way:
+
+```text
+@aifcoding/opencode-memory → @aifcoding/memory-core
+@aifcoding/memory-mcp      → @aifcoding/memory-core
+```
+
+Core does not depend on OpenCode or the MCP SDK; the Core root entry does not load `bun:sqlite`, and the `/sqlite` entry still requires Bun.
+
+The MCP adapter uses the official MCP SDK v2 and exposes a fixed project scope over stdio. Its default readonly profile only registers `memory_search`, `memory_read`, and `memory_list`.
 
 ### Directory structure
 
 ```text
-packages/core/       # domain / application / ports / retrieval / render / sqlite
+packages/core/       # Domain API, MemoryStore, SQLite, retrieval, and Capture
 packages/opencode/   # OpenCode adapter
-examples/             # Core usage example
+packages/mcp/        # MCP stdio adapter
+examples/            # Core usage example
 ```
 
 ### Current boundaries
 
-MCP, CLI, and vector retrieval are not implemented. Tokenizer identity persistence and compatibility detection are planned; automatic index rebuilding has not been decided.
+- The first MCP release supports stdio only; Streamable HTTP and legacy SSE are not implemented. One MCP process binds one fixed project scope.
+- MCP readonly is a tool-permission profile, not filesystem-level SQLite read-only mode.
+- The OpenCode adapter may still use `global/default`; project-scoped MCP tools do not automatically migrate or read other scopes.
+- Vector retrieval, TeamKbSource, automatic project identity, HTTP remote access, and a CLI are not implemented.
+- Tokenizer identity persistence and compatibility detection are planned; automatic index rebuilding has not been decided.
+- The capture golden set currently has 20 samples and uses a deterministic extractor, so it is only a deterministic pipeline self-test, not real-model quality.
 
 ## Data & privacy
 

@@ -45,6 +45,52 @@
 
 **OpenCode Adapter 已实现**：`messages.transform` 末尾注入、12 个工具和 `session.compacted` 摘要归档。
 
+## 安全辅助记忆提取
+
+Capture 将「模型提取」和「正式记忆写入」分开：
+
+```
+OpenCode 会话
+  → compaction 或显式 memory_capture
+  → 读取会话消息
+  → 过滤工具调用、工具结果、Pin overlay 和历史记忆块
+  → 创建全新的空 Session（不是 fork，fork 会继承未过滤历史导致递归污染）
+  → 调用配置的提取 Agent
+  → 严格 JSON Schema 校验
+  → Core 执行凭据、bidi 和不可见 Unicode 扫描
+  → 保存 pending / agent / low 候选
+  → 用户 approve 或 reject
+  → approve 后事务化写入正式 memory 和 FTS
+```
+
+Capture 默认关闭，启用后会增加模型调用成本，并将过滤后的会话文本发送给配置的 Agent。
+
+### 职责边界
+
+| 层 | 职责 |
+|---|---|
+| OpenCode Adapter | 读取和过滤消息、创建空 Session、调用提取 Agent、严格解析 JSON |
+| MemoryManager | 默认 Scope、Capture API、结构化结果 |
+| SqliteMemoryStore | 幂等 Lease、候选持久化、安全扫描、审批事务 |
+| 用户 | 批准或拒绝候选，决定是否进一步 Pin |
+
+### 候选状态机
+
+```
+pending → approve → approved（创建或关联正式 memory）
+pending → reject  → rejected
+```
+
+approved/rejected 候选再次审批返回 already_reviewed。候选固定 origin=agent + trust=low；批准后创建 origin=agent + trust=high 的正式 memory，不自动 Pin。
+
+### 防递归污染
+
+提取输入只保留可确认来源的用户和助手自然语言文本，排除 tool call/result、非文本 Part、Pin overlay 及 msg_mem_/prt_mem_ marker、memory_recall/read/recall_summaries/候选工具结果、memory-context/mem_block 参考块、提取 Agent 自身输出。过滤优先依赖消息角色、Part 类型、synthetic 标记和插件 marker。
+
+### 安全扫描
+
+候选写入前和批准前都执行确定性扫描：高置信凭据、私钥标记、Bearer/JWT/云访问键、Cookie/Token/API Key 键值、双向控制字符、高风险不可见 Unicode。命中候选不持久化，只记录风险代码和数量，不记原文。扫描不构成 Prompt Injection 完整防护，最终安全门是用户审批。
+
 **规划中（数据模型已预留字段，代码未实现）**：向量检索/内联余弦、`EmbeddingProvider`、Tokenizer 身份持久化和兼容检测、多源 `MemorySource[]`、project 身份键隔离、严格信任分级，以及 MCP、CLI 等新的 Core 适配器。自动索引重建尚未决定；当前已实现单方法 `Tokenizer` 注入，默认实现为 jieba-wasm。
 
 ## 总体架构
@@ -58,12 +104,13 @@
 │ retrieval / render（检索与通用 Pin 文本渲染）                  │
 │ sqlite（bun:sqlite 实现，独立 /sqlite 导出）                   │
 ├──────────────────────────────────────────────────────────────┤
-│ Adapter：@aifcoding/opencode-memory                           │
-│ plugin.ts：配置、12 个工具、overlay、compaction 事件           │
+│ Adapters                                                     │
+│ ├─ @aifcoding/opencode-memory：tools / overlay / compaction   │
+│ └─ @aifcoding/memory-mcp：stdio / profiles / MCP tools        │
 └──────────────────────────────────────────────────────────────┘
 ```
 
-依赖方向：OpenCode Adapter → Core；Core 不依赖 OpenCode。`MemoryManager` 负责默认作用域、输入校验、删除状态、Pin 配额和结构化结果；`MemoryStore` 只负责持久化原语、检索和事务一致性。
+依赖方向：`opencode → core`、`mcp → core`，均单向；Core 不依赖 OpenCode 或 MCP SDK。`MemoryManager` 负责默认作用域、输入校验、删除状态、Pin 配额和结构化结果；`MemoryStore` 只负责持久化原语、检索和事务一致性。
 
 Core 根入口不加载 `bun:sqlite`；需要 SQLite 时使用 `@aifcoding/memory-core/sqlite`。该子路径仍要求 Bun。
 
@@ -80,6 +127,13 @@ packages/core/
 
 packages/opencode/
 └── src/plugin.ts    # OpenCode 配置、工具与事件适配
+
+packages/mcp/
+├── src/server.ts    # MCP Server + 声明式工具注册
+├── src/tools/       # 工具定义（read / write / pins / candidates）
+├── src/config.ts    # JSONC 配置
+├── src/cli.ts       # memory-mcp 可执行入口
+└── src/render/      # 结果围栏与转义
 ```
 
 `MemoryManager` 是 Core 的统一高层入口，所有公共方法使用对象参数并返回 Promise；Adapter 负责把结构化结果转换为 OpenCode 工具文案和消息结构。
@@ -92,6 +146,103 @@ packages/opencode/
 | 压缩时归档 | `session.compacted` 事件 + `client.session.messages` 读产物 |
 | 主动读写工具 | plugin `tool: { ... }`（zod 定义参数） |
 | 配置 | `opencode.json` → `plugin: [["@aifcoding/opencode-memory", {...}]]` |
+
+## MCP Adapter
+
+`@aifcoding/memory-mcp` 是 `@aifcoding/memory-core` 的第二个 Adapter，用标准 MCP 协议向外部 Agent 暴露记忆能力。
+
+```text
+MCP Client
+  → @aifcoding/memory-mcp
+  → MemoryManager
+  → MemoryStore
+  → SqliteMemoryStore
+```
+
+依赖方向为 `mcp → core`。Core 不导入 MCP SDK、MCP Tool 或 Transport 类型；MCP Handler 只调用 MemoryManager，不直接执行 SQL。
+
+### SDK 与传输
+
+首版使用 `@modelcontextprotocol/server@2.0.0` + `StdioServerTransport`。选择官方 SDK 是为了复用 MCP initialize 与版本协商、`tools/list`、`tools/call`、Tool 输入/输出 Schema、structuredContent、stdio 消息分帧和 Tool annotations。
+
+首版只实现 stdio。Streamable HTTP、Legacy SSE、认证和远程 RBAC 不在当前范围。stdio 模式下 stdout 只能承载 MCP 协议消息；日志和启动错误必须写入 stderr。
+
+### 声明式工具注册
+
+每个工具通过 `MemoryMcpToolDefinition` 描述（name / title / description / inputSchema / outputSchema / requiredCapabilities / annotations / execute）。所有定义进入统一 Registry，Server 启动时根据 capability 过滤后再调用 `registerTool`：
+
+```text
+ToolDefinitions → requiredCapabilities → Profile capabilities → registerAllowed → McpServer.registerTool
+```
+
+未授权工具不会出现在 `tools/list`，而不是等到调用时再返回权限错误。首版使用统一的成功/错误 envelope output Schema；未来可逐步为每个 Tool 收紧独立 output Schema，不改变 Registry 结构。
+
+### Profile 与 Capability
+
+六个 capability：`memory:read` / `memory:write` / `pin:read` / `pin:write` / `candidate:read` / `candidate:review`。
+
+| Profile | Capability |
+|---|---|
+| `readonly` | `memory:read` |
+| `full` | `memory:read`、`memory:write`、`pin:read`、`pin:write`、`candidate:read`、`candidate:review` |
+
+`candidate:review` 还受独立配置控制（`profile=full` 且 `allowCandidateReview=true`）。Profile 在 Server 启动时固定，MCP 客户端不能通过工具参数切换权限；不同信任等级的客户端应启动不同 MCP 进程。
+
+### 固定 Scope
+
+Scope 是 MCP Adapter 的核心安全边界：一个 MCP Server 进程绑定一个固定 project Scope，所有 Handler 使用同一 Scope。
+
+```jsonc
+{ "scope": { "scope": "project", "scopeKey": "/absolute/project" } }
+```
+
+工具输入不接受 `scope`、`scopeKey`、`dbPath`、`projectRoot`；每个 Handler 在调用 Manager 时注入 Server Scope。因此外部 Agent 不能通过输入参数枚举其他项目；ID 属于其他 Scope 时返回 `not_found`。
+
+首版不实现 D15 的自动项目身份，`scopeKey` 由配置显式提供。当前 OpenCode Adapter 仍可能写入 `global/default`；MCP project Scope 不会自动读取或迁移这些记录；两个 Adapter 要共享记忆必须使用相同 Scope。
+
+### 工具与权限
+
+| 工具 | readonly | full | 说明 |
+|---|---:|---:|---|
+| `memory_search` | ✓ | ✓ | 搜索正式记忆，返回预览 |
+| `memory_read` | ✓ | ✓ | 读取完整正式记忆 |
+| `memory_list` | ✓ | ✓ | 列出正式记忆元数据 |
+| `memory_store` | — | ✓ | 固定 Scope、`origin=agent` |
+| `memory_forget` | — | ✓ | 软删除 |
+| `memory_pin` | — | ✓ | 固定高信任记忆 |
+| `memory_unpin` | — | ✓ | 取消固定 |
+| `memory_pins` | — | ✓ | 列出固定记忆元数据 |
+| `memory_candidate_list` | — | ✓ | 列出候选元数据和预览 |
+| `memory_candidate_read` | — | ✓ | 读取候选 |
+| `memory_candidate_review` | — | 条件启用 | 还要求 `allowCandidateReview=true` |
+
+MCP Server 不暴露 `memory_capture`：候选提取需要宿主会话和模型调用能力，而通用 MCP Server 没有可假设的会话历史。
+
+### readonly 边界与写入策略
+
+readonly 是 MCP 工具权限（不注册写入/删除/Pin/审批工具），**不是 SQLite 文件级只读**：创建 SqliteMemoryStore 时仍可能检查或执行兼容迁移、创建 WAL/SHM 文件。
+
+`memory_store` 的客户端参数不包括 scope/origin/trust/embedding/pinnedAt；Server 强制 `scope=固定 Server Scope`、`origin=agent`、`trust=writeTrust`（默认 `low`）。默认低信任写入不能 Pin。
+
+### 结果协议与数据库兼容
+
+成功结果返回 `{ schemaVersion, kind, notice, scope, data }`；错误返回 `{ schemaVersion, ok:false, error:{code,message,retryable} }`。文本 fallback 统一包 `<memory-context source="mcp">` 并转义，正文不能伪造关闭标记。
+
+OpenCode Adapter 和 MCP Adapter 可指向同一个 SQLite 文件，但必须使用 Schema 兼容的 Core 版本；数据库版本过新时 fail-fast。MCP Host 配置建议固定 package 版本。
+
+### D-MCP 决策摘要
+
+| 决策 | 选择 | 理由 |
+|---|---|---|
+| SDK | 官方 MCP Server SDK v2 | 避免自行实现协议 |
+| 首版传输 | stdio | 本地、零端口、无需认证 |
+| 默认 Profile | readonly | 外部 Agent 默认不应修改记忆 |
+| 权限模型 | Profile → capability → Tool Registry | 未授权工具不注册 |
+| Scope | Server 固定 project Scope | 防止客户端跨项目枚举 |
+| 写入来源/信任 | `origin=agent` / 默认 `low` | 保留来源语义、安全默认值 |
+| Candidate Review | 独立显式开关 | 审批是高权限操作 |
+| 输出 | structuredContent + 文本围栏 | 兼容不同 MCP Client |
+| HTTP/SSE | 暂不实现 | 避免提前引入认证和远程攻击面 |
 
 ## 数据模型
 
