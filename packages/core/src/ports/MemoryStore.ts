@@ -7,6 +7,17 @@ import type {
   Trust,
   MemoryType,
 } from '../domain/types.js';
+import type {
+  BeginCaptureInput,
+  BeginCaptureResult,
+  CompleteCaptureInput,
+  CompleteCaptureResult,
+  FailCaptureResult,
+  ListMemoryCandidatesInput,
+  MemoryCandidate,
+  ReadMemoryCandidateResult,
+  ReviewMemoryCandidateResult,
+} from '../domain/capture.js';
 
 export interface CreateMemoryInput {
   scope: ScopeRef;
@@ -102,4 +113,14 @@ export interface MemoryStore {
   deleteKv(contextKey: string, key: string): boolean;
 
   close(): void;
+  beginCapture?(input: BeginCaptureInput): BeginCaptureResult;
+  completeCapture?(input: CompleteCaptureInput): CompleteCaptureResult;
+  failCapture?(captureKey: string, leaseToken: string, errorCode: string): FailCaptureResult;
+  listMemoryCandidates?(input: ListMemoryCandidatesInput): MemoryCandidate[];
+  readMemoryCandidate?(input: { id: number; scope: ScopeRef }): ReadMemoryCandidateResult;
+  reviewMemoryCandidate?(input: {
+    id: number;
+    decision: 'approve' | 'reject';
+    scope: ScopeRef;
+  }): ReviewMemoryCandidateResult;
 }

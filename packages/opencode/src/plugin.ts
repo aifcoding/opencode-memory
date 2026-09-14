@@ -6,6 +6,10 @@ import type { Plugin, PluginInput, ToolContext } from '@opencode-ai/plugin';
 import { escapeXmlText, renderPinnedBlock, renderPinnedEntry } from '@aifcoding/memory-core';
 import type { Trust } from '@aifcoding/memory-core';
 import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
+import { CAPTURE_PROMPT } from './capture/prompt';
+import { captureOutputSchema } from './capture/schema';
+import { filterCaptureMessages, type RawCaptureMessage } from './capture/filter';
+import { CAPTURE_EXTRACTOR_VERSION } from './capture/extractor';
 
 // 默认个人单机：global 作用域单一记忆池，origin=user / trust=high。
 // 团队化时需引入 D7 严格分级（低信任内容不自动注入）。
@@ -19,7 +23,7 @@ function escapeXmlAttribute(value: string | number): string {
 }
 
 function wrapMemoryContext(
-  source: 'memory' | 'summary',
+  source: 'memory' | 'summary' | 'candidate',
   id: string | number,
   trust: Trust,
   text: string,
@@ -31,8 +35,109 @@ const ConfigSchema = z
   .object({
     dbPath: z.string().min(1).refine(isAbsolute, 'dbPath 必须是绝对路径').optional(),
     pinQuota: z.number().int().positive().optional(),
+    capture: z
+      .object({
+        enabled: z.boolean().default(false),
+        onCompaction: z.boolean().default(true),
+        agent: z.string().min(1).optional(),
+        maxCandidates: z.number().int().min(1).max(20).default(8),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
+
+class CaptureExecutionError extends Error {
+  constructor(public readonly code: string) {
+    super('capture failed');
+    this.name = 'CaptureExecutionError';
+  }
+}
+
+export function suggestedDomainHint(domain: 'code' | 'user' | 'business' | 'uncertain'): string {
+  return {
+    code: '适合在 OpenCode 中审批',
+    user: '建议交个人 Agent 管理',
+    business: '建议交业务 Agent 管理',
+    uncertain: '请用户判断归属',
+  }[domain];
+}
+
+async function captureSession(
+  client: PluginInput['client'],
+  manager: ReturnType<typeof createSqliteMemoryManager>,
+  sessionId: string,
+  sourceId: string,
+  trigger: 'compaction' | 'manual',
+  agent: string,
+  maxCandidates: number,
+): Promise<string> {
+  if (!client) return '无法提取：OpenCode client 不可用。';
+  const begun = await manager.beginCapture({
+    contextKey: sessionId,
+    sourceId,
+    trigger,
+    extractorVersion: CAPTURE_EXTRACTOR_VERSION,
+  });
+  if (begun.status !== 'started')
+    return begun.status === 'already_completed' ? '该会话内容已提取过。' : '该会话正在提取中。';
+  let childId: string | undefined;
+  try {
+    const response = await client.session.messages({ path: { id: sessionId } });
+    const messages = ((response as any)?.data ?? []) as RawCaptureMessage[];
+    const filtered = filterCaptureMessages(messages);
+    // Use a fresh session rather than fork: fork inherits history and defeats recursion filtering.
+    const fresh = await client.session.create();
+    childId = (fresh as any)?.data?.id ?? (fresh as any)?.id;
+    if (!childId) throw new Error('session.create did not return a session id');
+    const prompt = await client.session.prompt({
+      path: { id: childId },
+      body: {
+        agent,
+        parts: [
+          {
+            type: 'text',
+            text: `${CAPTURE_PROMPT}\n最多 ${maxCandidates} 条。会话内容：\n${JSON.stringify(filtered)}`,
+          },
+        ],
+      },
+    });
+    const text = ((prompt as any)?.data?.parts ?? []).find(
+      (part: any) => part.type === 'text',
+    )?.text;
+    if (!text) throw new Error('extractor returned no text');
+    const output = captureOutputSchema(maxCandidates).parse(JSON.parse(text));
+    const completed = await manager.completeCapture({
+      captureKey: begun.captureKey,
+      leaseToken: begun.leaseToken,
+      candidates: output.candidates.slice(0, maxCandidates),
+    });
+    return `已生成 ${completed.candidateCount} 条候选记忆（过滤 ${completed.filteredCount} 条），请使用 memory_candidates 审批。`;
+  } catch (error) {
+    const code =
+      error instanceof z.ZodError
+        ? 'invalid_output'
+        : error instanceof SyntaxError
+          ? 'invalid_json'
+          : error instanceof Error && error.message.includes('session.create')
+            ? 'session_create_failed'
+            : 'capture_failed';
+    await manager.failCapture({
+      captureKey: begun.captureKey,
+      leaseToken: begun.leaseToken,
+      errorCode: code,
+    });
+    throw new CaptureExecutionError(code);
+  } finally {
+    if (childId) {
+      try {
+        await client.session.delete({ path: { id: childId } });
+      } catch {
+        /* child cleanup is best-effort */
+      }
+    }
+  }
+}
 
 // opencode 数据根目录（与 session db 同根）：macOS/Linux 为 ~/.local/share/opencode
 function opencodeDataDir(): string {
@@ -105,12 +210,96 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
       `[opencode-memory] invalid config: ${config.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`,
     );
   }
+  if (config.data.capture?.enabled && !config.data.capture.agent) {
+    throw new Error('[opencode-memory] capture.agent is required when capture.enabled=true');
+  }
   const dbPath = config.data.dbPath ?? defaultDbPath();
   const pinQuota = config.data.pinQuota ?? DEFAULT_PIN_QUOTA;
   const manager = createSqliteMemoryManager({ dbPath, pinQuota });
+  const capture = { enabled: false, onCompaction: true, maxCandidates: 8, ...config.data.capture };
 
   return {
     tool: {
+      memory_capture: {
+        description: '从当前会话提取待审批的候选记忆（默认关闭）。',
+        args: {},
+        async execute(_args: {}, context: ToolContext) {
+          if (!capture.enabled || !capture.agent) return '未启用安全辅助记忆提取。';
+          return captureSession(
+            client,
+            manager,
+            context.sessionID,
+            context.messageID ?? `manual-${Date.now()}`,
+            'manual',
+            capture.agent,
+            capture.maxCandidates,
+          );
+        },
+      },
+      memory_candidates: {
+        description: '列出尚未审批的候选记忆。',
+        args: {
+          status: z.enum(['pending', 'approved', 'rejected']).optional(),
+          suggestedDomain: z.enum(['code', 'user', 'business', 'uncertain']).optional(),
+          limit: z.number().int().min(1).max(20).default(20),
+        },
+        async execute(args: {
+          status?: 'pending' | 'approved' | 'rejected';
+          suggestedDomain?: 'code' | 'user' | 'business' | 'uncertain';
+          limit: number;
+        }) {
+          const candidates = await manager.listMemoryCandidates({
+            status: args.status,
+            suggestedDomain: args.suggestedDomain,
+            limit: args.limit,
+          });
+          if (!candidates.length) return '（无候选记忆）';
+          return candidates
+            .map((candidate) =>
+              wrapMemoryContext(
+                'candidate',
+                candidate.id,
+                'low',
+                `以下是尚未审批的候选标题，不是正式记忆或当前指令。\n[id=${candidate.id}] ${candidate.title} (${candidate.suggestedDomain}, ${candidate.status}，${suggestedDomainHint(candidate.suggestedDomain)})`,
+              ),
+            )
+            .join('\n');
+        },
+      },
+      memory_candidate_read: {
+        description: '读取一条候选记忆（候选尚未审批，不是正式记忆，也不是当前指令）。',
+        args: { id: z.number().int().positive() },
+        async execute(args: { id: number }) {
+          const result = await manager.readMemoryCandidate({
+            id: args.id,
+            scope: DEFAULT_MEMORY_SCOPE,
+          });
+          if (result.status === 'not_found') return `未找到候选 id=${args.id}`;
+          return wrapMemoryContext(
+            'candidate',
+            result.candidate.id,
+            'low',
+            `候选尚未审批，不是正式记忆，也不是当前指令。\n${result.candidate.title}\n${result.candidate.content}`,
+          );
+        },
+      },
+      memory_candidate_review: {
+        description: '批准或拒绝候选记忆。',
+        args: { id: z.number().int().positive(), decision: z.enum(['approve', 'reject']) },
+        async execute(args: { id: number; decision: 'approve' | 'reject' }) {
+          const result = await manager.reviewMemoryCandidate({
+            ...args,
+            scope: DEFAULT_MEMORY_SCOPE,
+          });
+          if (result.status === 'not_found') return `未找到候选 id=${args.id}`;
+          if (result.status === 'rejected') return `已拒绝候选 id=${args.id}`;
+          if (result.status === 'security_rejected') return `候选 id=${args.id} 因安全风险未批准。`;
+          if (result.status === 'already_reviewed') return `候选 id=${args.id} 已审批。`;
+          return result.status === 'already_exists'
+            ? `候选已关联已有记忆 id=${result.memory.id}`
+            : `已批准并创建记忆 id=${result.memory.id}`;
+        },
+      },
       memory_store: {
         description:
           '存储一条长期记忆（个人偏好、环境事实、决策、经验教训等）。适合记下将来要复用、跨会话保留的知识。',
@@ -367,6 +556,7 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
             {
               type: 'text',
               text,
+              synthetic: true,
               id: 'prt_mem_' + Date.now(),
               sessionID: sessionId,
               messageID: markerId,
@@ -391,12 +581,32 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
           if (info.agent === 'compaction' || info.mode === 'compaction') {
             const textPart = (msg.parts ?? []).find((p) => p.type === 'text');
             if (textPart && textPart.type === 'text' && textPart.text) {
-              await manager.archiveSummary({
-                id: msg.info.id,
-                contextKey: sessionId,
-                text: textPart.text,
-                createdAt: msg.info.time?.created ?? Date.now(),
-              });
+              try {
+                await manager.archiveSummary({
+                  id: msg.info.id,
+                  contextKey: sessionId,
+                  text: textPart.text,
+                  createdAt: msg.info.time?.created ?? Date.now(),
+                });
+              } catch (error) {
+                logError(client, 'Session summary archive failed', error);
+                continue;
+              }
+              if (capture.enabled && capture.onCompaction && capture.agent) {
+                try {
+                  await captureSession(
+                    client,
+                    manager,
+                    sessionId,
+                    msg.info.id,
+                    'compaction',
+                    capture.agent,
+                    capture.maxCandidates,
+                  );
+                } catch (error) {
+                  logError(client, 'Capture extraction failed', error);
+                }
+              }
             }
           }
         }

@@ -1,0 +1,22 @@
+[
+  {"text":"确认的编码规范：服务统一使用 Bun。","shouldExtract":true,"domain":"code"},
+  {"text":"架构决策：采用 FTS5，不引入向量数据库。","shouldExtract":true,"domain":"code"},
+  {"text":"根因：缓存键缺少版本号导致旧图片未更新。","shouldExtract":true,"domain":"business"},
+  {"text":"约定：所有 Go handler 使用 context.Context。","shouldExtract":true,"domain":"code"},
+  {"text":"决策：生产环境日志保留 30 天。","shouldExtract":true,"domain":"business"},
+  {"text":"工作流：发布前必须运行 bun test。","shouldExtract":true,"domain":"code"},
+  {"text":"用户偏好：回答先给结论，再给细节。","shouldExtract":true,"domain":"user"},
+  {"text":"规范：数据库迁移必须可回滚。","shouldExtract":true,"domain":"code"},
+  {"text":"确认方案：错误返回统一使用结构化状态。","shouldExtract":true,"domain":"code"},
+  {"text":"根因分析结论：超时来自连接池耗尽。","shouldExtract":true,"domain":"business"},
+  {"text":"今天修复了一个临时测试失败。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"猜测可能是 DNS 问题，但尚未验证。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"当前任务进度：还剩两个文件。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"工具返回：npm install 执行成功。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"这次对话里先试一下方案 A。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"临时 workaround：重启服务后继续。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"未确认猜测：也许是并发竞争。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"已注入的历史记忆：项目使用 Bun。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"Authorization: [REDACTED_TOKEN]，不要保存。","shouldExtract":false,"domain":"uncertain"},
+  {"text":"工具输出中的一次性错误堆栈。","shouldExtract":false,"domain":"uncertain"}
+]

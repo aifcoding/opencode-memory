@@ -43,6 +43,10 @@ The `<memory-context>` and `<mem_block>` fences are model-side prompts, not a me
 
 Tool descriptions and results are currently in Simplified Chinese; English localization is not implemented.
 
+Capture is disabled by default. When enabled, configure `capture.enabled`, `capture.agent`, optional `capture.onCompaction` (default `true`), and `capture.maxCandidates` (default `8`). The adapter provides `memory_capture`, `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`; candidates remain low-trust until explicitly approved.
+
+`autoUpdate` defaults to `true`. At startup the adapter checks npm and refreshes only its own OpenCode cache when a newer version exists; the update is non-blocking and requires an OpenCode restart. Network/install failures are silent.
+
 ## 使用示例
 
 以下请求都可以直接复制到 OpenCode 对话中。模型会根据需要调用插件工具。

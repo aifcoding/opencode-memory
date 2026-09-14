@@ -79,6 +79,10 @@ The main methods are `storeMemory`, `recallMemories`, `listMemories`, `readMemor
 
 Pin results include `pinned`, `quota_exceeded`, `summary_required`, `trust_denied`, `not_found`, and `deleted`. `getPinnedContext` returns `{ entries, text, size }`. `MemoryStore` is the synchronous low-level extension port; Manager is the asynchronous public boundary. `MemoryValidationError` reports invalid input and `DuplicateMemoryError` reports duplicate active content.
 
+### Capture API
+
+The capture API consists of `beginCapture`, `completeCapture`, `failCapture`, `listMemoryCandidates`, `readMemoryCandidate`, and `reviewMemoryCandidate`. Candidates are isolated, default to `origin=agent`, `trust=low`, and `pending`, and never participate in recall or Pin before approval.
+
 ### Custom Tokenizer
 
 The default tokenizer uses `jieba-wasm`. Inject any implementation of the `Tokenizer` interface through the SQLite factory:

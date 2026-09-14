@@ -77,6 +77,44 @@ const migrations: Migration[] = [
       );
     },
   },
+  {
+    version: 3,
+    up: (db) => {
+      db.run(`
+        CREATE TABLE memory_capture_runs (
+          capture_key TEXT PRIMARY KEY, context_key TEXT NOT NULL, source_id TEXT NOT NULL,
+          scope TEXT NOT NULL DEFAULT 'global', scope_key TEXT NOT NULL DEFAULT 'default',
+          trigger TEXT NOT NULL, extractor_version TEXT NOT NULL, status TEXT NOT NULL,
+          lease_token TEXT, lease_expires_at INTEGER, candidate_count INTEGER NOT NULL DEFAULT 0,
+          filtered_count INTEGER NOT NULL DEFAULT 0, error_code TEXT, created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL, completed_at INTEGER,
+          CHECK(scope IN ('global','user','project','session')),
+          CHECK(trigger IN ('compaction','manual')),
+          CHECK(status IN ('running','completed','failed')),
+          CHECK(candidate_count >= 0), CHECK(filtered_count >= 0)
+        )
+      `);
+      db.run(`CREATE INDEX idx_capture_context ON memory_capture_runs(context_key, created_at)`);
+      db.run(`
+        CREATE TABLE memory_candidates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT, capture_key TEXT NOT NULL,
+          scope TEXT NOT NULL, scope_key TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'agent',
+          trust TEXT NOT NULL DEFAULT 'low', status TEXT NOT NULL DEFAULT 'pending',
+          suggested_domain TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL,
+          summary TEXT NOT NULL DEFAULT '', type TEXT NOT NULL DEFAULT 'fact',
+          tags TEXT NOT NULL DEFAULT '[]', content_hash TEXT NOT NULL,
+          risk_flags TEXT NOT NULL DEFAULT '[]', approved_memory_id INTEGER,
+          created_at INTEGER NOT NULL, reviewed_at INTEGER,
+          CHECK(scope IN ('global','user','project','session')), CHECK(origin = 'agent'),
+          CHECK(trust = 'low'), CHECK(status IN ('pending','approved','rejected')),
+          CHECK(suggested_domain IN ('code','user','business','uncertain')),
+          UNIQUE(capture_key, content_hash)
+        )
+      `);
+      db.run(`CREATE INDEX idx_candidate_status ON memory_candidates(status, created_at)`);
+      db.run(`CREATE INDEX idx_candidate_scope ON memory_candidates(scope, scope_key, status)`);
+    },
+  },
 ];
 
 export function migrate(db: Database): void {

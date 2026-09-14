@@ -1,4 +1,17 @@
 import type { MemoryEntry, MemoryType, Origin, PinMode, ScopeRef, Trust } from '../domain/types.js';
+import type {
+  BeginCaptureInput,
+  BeginCaptureResult,
+  CompleteCaptureInput,
+  CompleteCaptureResult,
+  FailCaptureResult,
+  ListMemoryCandidatesInput,
+  MemoryCandidate,
+  MemoryCandidateTargetInput,
+  ReadMemoryCandidateResult,
+  ReviewMemoryCandidateInput,
+  ReviewMemoryCandidateResult,
+} from '../domain/capture.js';
 import { renderPinnedBlock } from '../render/pinned-context.js';
 import type { MemoryStore } from '../ports/MemoryStore.js';
 import { MemoryValidationError } from '../errors.js';
@@ -229,6 +242,57 @@ export class MemoryManager {
   }
   async close(): Promise<void> {
     this.store.close();
+  }
+  async beginCapture(input: BeginCaptureInput): Promise<BeginCaptureResult> {
+    if (
+      input.leaseMs !== undefined &&
+      (!Number.isInteger(input.leaseMs) || input.leaseMs <= 0 || input.leaseMs > 3_600_000)
+    )
+      throw new MemoryValidationError('leaseMs must be an integer between 1 and 3600000');
+    if (!this.store.beginCapture)
+      throw new MemoryValidationError('Capture is not supported by this store');
+    return this.store.beginCapture({ ...input, scope: input.scope ?? this.options.defaultScope });
+  }
+  async completeCapture(input: CompleteCaptureInput): Promise<CompleteCaptureResult> {
+    if (!this.store.completeCapture)
+      throw new MemoryValidationError('Capture is not supported by this store');
+    return this.store.completeCapture(input);
+  }
+  async failCapture(input: {
+    captureKey: string;
+    leaseToken: string;
+    errorCode: string;
+  }): Promise<FailCaptureResult> {
+    if (!this.store.failCapture)
+      throw new MemoryValidationError('Capture is not supported by this store');
+    return this.store.failCapture(input.captureKey, input.leaseToken, input.errorCode);
+  }
+  async listMemoryCandidates(input: ListMemoryCandidatesInput = {}): Promise<MemoryCandidate[]> {
+    if (!this.store.listMemoryCandidates)
+      throw new MemoryValidationError('Capture is not supported by this store');
+    return this.store.listMemoryCandidates({
+      status: 'pending',
+      ...input,
+      scope: input.scope ?? this.options.defaultScope,
+    });
+  }
+  async readMemoryCandidate(input: MemoryCandidateTargetInput): Promise<ReadMemoryCandidateResult> {
+    if (!this.store.readMemoryCandidate)
+      throw new MemoryValidationError('Capture is not supported by this store');
+    return this.store.readMemoryCandidate({
+      id: input.id,
+      scope: input.scope ?? this.options.defaultScope,
+    });
+  }
+  async reviewMemoryCandidate(
+    input: ReviewMemoryCandidateInput,
+  ): Promise<ReviewMemoryCandidateResult> {
+    if (!this.store.reviewMemoryCandidate)
+      throw new MemoryValidationError('Capture is not supported by this store');
+    return this.store.reviewMemoryCandidate({
+      ...input,
+      scope: input.scope ?? this.options.defaultScope,
+    });
   }
   private nonEmpty(value: string, name: string): void {
     if (typeof value !== 'string' || !value.trim())

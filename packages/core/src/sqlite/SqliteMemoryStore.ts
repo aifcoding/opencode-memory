@@ -2,7 +2,19 @@ import { Database, type SQLQueryBindings } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { MemoryEntry, PinMode, Scope } from '../domain/types.js';
+import type { MemoryEntry, PinMode, Scope, ScopeRef } from '../domain/types.js';
+import type {
+  BeginCaptureInput,
+  BeginCaptureResult,
+  CompleteCaptureInput,
+  CompleteCaptureResult,
+  FailCaptureResult,
+  ListMemoryCandidatesInput,
+  MemoryCandidate,
+  ReadMemoryCandidateResult,
+  ReviewMemoryCandidateResult,
+} from '../domain/capture.js';
+import { candidateRiskFlags } from '../domain/capture.js';
 import { renderPinnedBlock } from '../render/pinned-context.js';
 import { defaultTokenizer, type Tokenizer } from '../retrieval/tokenizer.js';
 import { migrate } from './migrations.js';
@@ -19,6 +31,20 @@ import type {
   SummaryResult,
   UpdateContentResult,
 } from '../ports/MemoryStore.js';
+
+function candidateScanText(candidate: {
+  title: string;
+  content: string;
+  summary?: string;
+  tags?: string[];
+}): string {
+  return [
+    candidate.title,
+    candidate.content,
+    candidate.summary ?? '',
+    ...(candidate.tags ?? []),
+  ].join('\n');
+}
 
 interface MemoryRow {
   id: number;
@@ -473,7 +499,293 @@ export class SqliteMemoryStore implements MemoryStore {
     this.db.close();
   }
 
+  beginCapture(input: BeginCaptureInput): BeginCaptureResult {
+    const captureKey = hashContent(
+      JSON.stringify([
+        input.contextKey,
+        input.sourceId,
+        input.extractorVersion,
+        input.scope?.scope ?? 'global',
+        input.scope?.scopeKey ?? 'default',
+      ]),
+    );
+    const now = Date.now();
+    const leaseToken = hashContent(`${captureKey}:${now}:${Math.random()}`);
+    const leaseExpiresAt = now + (input.leaseMs ?? 120_000);
+    return this.withRetry<BeginCaptureResult>(() => {
+      this.db.run('BEGIN IMMEDIATE');
+      try {
+        const row = this.db
+          .query(
+            'SELECT status, lease_expires_at, candidate_count, filtered_count FROM memory_capture_runs WHERE capture_key=?',
+          )
+          .get(captureKey) as any;
+        if (row?.status === 'completed') {
+          this.db.run('COMMIT');
+          return {
+            status: 'already_completed',
+            captureKey,
+            candidateCount: row.candidate_count ?? 0,
+            filteredCount: row.filtered_count ?? 0,
+          };
+        }
+        if (row?.status === 'running' && (row.lease_expires_at ?? 0) > now) {
+          this.db.run('COMMIT');
+          return { status: 'in_progress', captureKey, leaseExpiresAt: row.lease_expires_at };
+        }
+        this.db.run(
+          `INSERT INTO memory_capture_runs (capture_key,context_key,source_id,scope,scope_key,trigger,extractor_version,status,lease_token,lease_expires_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(capture_key) DO UPDATE SET status='running',lease_token=excluded.lease_token,lease_expires_at=excluded.lease_expires_at,error_code=NULL,completed_at=NULL,candidate_count=0,filtered_count=0,updated_at=excluded.updated_at`,
+          [
+            captureKey,
+            input.contextKey,
+            input.sourceId,
+            input.scope?.scope ?? 'global',
+            input.scope?.scopeKey ?? 'default',
+            input.trigger,
+            input.extractorVersion,
+            'running',
+            leaseToken,
+            leaseExpiresAt,
+            now,
+            now,
+          ],
+        );
+        this.db.run('COMMIT');
+        return { status: 'started', captureKey, leaseToken, leaseExpiresAt };
+      } catch (error) {
+        try {
+          this.db.run('ROLLBACK');
+        } catch {}
+        throw error;
+      }
+    });
+  }
+
+  completeCapture(input: CompleteCaptureInput): CompleteCaptureResult {
+    return this.withRetry<CompleteCaptureResult>(
+      () =>
+        this.db.transaction(() => {
+          const run = this.db
+            .query(
+              "SELECT * FROM memory_capture_runs WHERE capture_key=? AND lease_token=? AND status='running'",
+            )
+            .get(input.captureKey, input.leaseToken) as any;
+          if (!run) throw new Error('capture lease mismatch');
+          const riskCodes = new Set<any>();
+          const accepted = input.candidates.filter((candidate) => {
+            const flags = candidateRiskFlags(candidateScanText(candidate));
+            flags.forEach((flag) => riskCodes.add(flag));
+            return flags.length === 0;
+          });
+          const now = Date.now();
+          const candidates: MemoryCandidate[] = [];
+          for (const candidate of accepted) {
+            const contentHash = hashContent(candidate.content);
+            const insertResult = this.db.run(
+              `INSERT OR IGNORE INTO memory_candidates (capture_key,scope,scope_key,suggested_domain,title,content,summary,type,tags,content_hash,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+              [
+                input.captureKey,
+                run.scope,
+                run.scope_key,
+                candidate.suggestedDomain,
+                candidate.title,
+                candidate.content,
+                candidate.summary ?? '',
+                candidate.type,
+                JSON.stringify(candidate.tags ?? []),
+                contentHash,
+                now,
+              ],
+            );
+            if (insertResult.changes > 0) {
+              candidates.push(
+                mapCandidate(
+                  this.db
+                    .query('SELECT * FROM memory_candidates WHERE capture_key=? AND content_hash=?')
+                    .get(input.captureKey, contentHash) as any,
+                ),
+              );
+            }
+          }
+          this.db.run(
+            `UPDATE memory_capture_runs SET status='completed',candidate_count=?,filtered_count=?,completed_at=?,updated_at=? WHERE capture_key=? AND lease_token=?`,
+            [
+              candidates.length,
+              input.candidates.length - accepted.length,
+              now,
+              now,
+              input.captureKey,
+              input.leaseToken,
+            ],
+          );
+          return {
+            status: 'completed',
+            captureKey: input.captureKey,
+            candidates,
+            candidateCount: candidates.length,
+            filteredCount: input.candidates.length - accepted.length,
+            filteredRiskCodes: [...riskCodes],
+          };
+        })() as CompleteCaptureResult,
+    );
+  }
+
+  failCapture(captureKey: string, leaseToken: string, errorCode: string): FailCaptureResult {
+    const exists = this.db
+      .query('SELECT capture_key FROM memory_capture_runs WHERE capture_key=?')
+      .get(captureKey);
+    if (!exists) return { status: 'not_found', captureKey };
+    const changed = this.db.run(
+      `UPDATE memory_capture_runs SET status='failed',error_code=?,updated_at=?,completed_at=? WHERE capture_key=? AND lease_token=? AND status='running'`,
+      [errorCode, Date.now(), Date.now(), captureKey, leaseToken],
+    ).changes;
+    return changed ? { status: 'failed', captureKey } : { status: 'lease_mismatch', captureKey };
+  }
+
+  listMemoryCandidates(input: ListMemoryCandidatesInput): MemoryCandidate[] {
+    const clauses = ['1=1'];
+    const values: SQLQueryBindings[] = [];
+    if (input.status) {
+      clauses.push('status=?');
+      values.push(input.status);
+    }
+    if (input.suggestedDomain) {
+      clauses.push('suggested_domain=?');
+      values.push(input.suggestedDomain);
+    }
+    if (input.scope) {
+      clauses.push('scope=? AND scope_key=?');
+      values.push(input.scope.scope, input.scope.scopeKey);
+    }
+    values.push(input.limit ?? 20);
+    return (
+      this.db
+        .query(
+          `SELECT * FROM memory_candidates WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC LIMIT ?`,
+        )
+        .all(...values) as any[]
+    ).map(mapCandidate);
+  }
+
+  readMemoryCandidate(input: { id: number; scope: ScopeRef }): ReadMemoryCandidateResult {
+    const row = this.db
+      .query('SELECT * FROM memory_candidates WHERE id=? AND scope=? AND scope_key=?')
+      .get(input.id, input.scope.scope, input.scope.scopeKey) as any;
+    return row
+      ? { status: 'found', candidate: mapCandidate(row) }
+      : { status: 'not_found', id: input.id };
+  }
+
+  reviewMemoryCandidate(input: {
+    id: number;
+    decision: 'approve' | 'reject';
+    scope: ScopeRef;
+  }): ReviewMemoryCandidateResult {
+    const id = input.id;
+    const decision = input.decision;
+    return this.withRetry<ReviewMemoryCandidateResult>(
+      () =>
+        this.db.transaction(() => {
+          const row = this.db
+            .query('SELECT * FROM memory_candidates WHERE id=? AND scope=? AND scope_key=?')
+            .get(id, input.scope.scope, input.scope.scopeKey) as any;
+          if (!row) return { status: 'not_found', id };
+          const candidate = mapCandidate(row);
+          if (candidate.status !== 'pending') return { status: 'already_reviewed', candidate };
+          if (decision === 'reject') {
+            this.db.run(`UPDATE memory_candidates SET status='rejected',reviewed_at=? WHERE id=?`, [
+              Date.now(),
+              id,
+            ]);
+            return {
+              status: 'rejected',
+              candidate: { ...candidate, status: 'rejected', reviewedAt: Date.now() },
+            };
+          }
+          const flags = candidateRiskFlags(candidateScanText(candidate));
+          if (flags.length) return { status: 'security_rejected', id, riskFlags: flags };
+          const contentHash = hashContent(candidate.content);
+          const existing = this.db
+            .query(
+              'SELECT * FROM memories WHERE scope=? AND scope_key=? AND content_hash=? AND deleted_at IS NULL',
+            )
+            .get(candidate.scope.scope, candidate.scope.scopeKey, contentHash) as
+            | MemoryRow
+            | undefined;
+          let memory: MemoryEntry;
+          let status: 'approved' | 'already_exists' = 'approved';
+          if (existing) {
+            memory = mapRow(existing);
+            status = 'already_exists';
+          } else {
+            const now = Date.now();
+            const result = this.db.run(
+              `INSERT INTO memories (scope,scope_key,origin,trust,title,content,summary,type,tags,content_hash,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+              [
+                candidate.scope.scope,
+                candidate.scope.scopeKey,
+                'agent',
+                'high',
+                candidate.title,
+                candidate.content,
+                candidate.summary ?? '',
+                candidate.type,
+                JSON.stringify([
+                  ...new Set([...(candidate.tags ?? []), `domain:${candidate.suggestedDomain}`]),
+                ]),
+                contentHash,
+                now,
+                now,
+              ],
+            );
+            const memoryId = Number(result.lastInsertRowid);
+            this.syncFts(memoryId, {
+              title: candidate.title,
+              summary: candidate.summary ?? '',
+              content: candidate.content,
+            });
+            memory = this.get(memoryId)!;
+          }
+          this.db.run(
+            `UPDATE memory_candidates SET status='approved',approved_memory_id=?,reviewed_at=? WHERE id=?`,
+            [memory.id, Date.now(), id],
+          );
+          return {
+            status,
+            memory,
+            candidate: {
+              ...candidate,
+              status: 'approved',
+              approvedMemoryId: memory.id,
+              reviewedAt: Date.now(),
+            },
+          };
+        })() as ReviewMemoryCandidateResult,
+    );
+  }
+
   private tokenizeQuery(query: string): string[] {
     return this.tokenizer.tokenize(query).split(/\s+/u).filter(Boolean);
   }
+}
+
+function mapCandidate(row: any): MemoryCandidate {
+  return {
+    id: row.id,
+    captureKey: row.capture_key,
+    scope: { scope: row.scope, scopeKey: row.scope_key },
+    origin: 'agent',
+    trust: 'low',
+    status: row.status,
+    suggestedDomain: row.suggested_domain,
+    title: row.title,
+    content: row.content,
+    summary: row.summary,
+    type: row.type,
+    tags: JSON.parse(row.tags || '[]'),
+    riskFlags: JSON.parse(row.risk_flags || '[]'),
+    approvedMemoryId: row.approved_memory_id ?? null,
+    createdAt: row.created_at,
+    reviewedAt: row.reviewed_at ?? null,
+  };
 }
