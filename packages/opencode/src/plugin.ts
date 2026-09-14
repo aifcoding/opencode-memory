@@ -10,6 +10,7 @@ import { CAPTURE_PROMPT } from './capture/prompt';
 import { captureOutputSchema } from './capture/schema';
 import { filterCaptureMessages, type RawCaptureMessage } from './capture/filter';
 import { CAPTURE_EXTRACTOR_VERSION } from './capture/extractor';
+import { checkAndRefresh } from './self-update';
 
 // 默认个人单机：global 作用域单一记忆池，origin=user / trust=high。
 // 团队化时需引入 D7 严格分级（低信任内容不自动注入）。
@@ -44,6 +45,7 @@ const ConfigSchema = z
       })
       .strict()
       .optional(),
+    autoUpdate: z.boolean().default(true),
   })
   .strict();
 
@@ -215,6 +217,23 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
   }
   const dbPath = config.data.dbPath ?? defaultDbPath();
   const pinQuota = config.data.pinQuota ?? DEFAULT_PIN_QUOTA;
+  if (config.data.autoUpdate) {
+    void checkAndRefresh()
+      .then((result) => {
+        if (result.status === 'updated' && client) {
+          client.app
+            .log({
+              body: {
+                service: 'opencode-memory',
+                level: 'info',
+                message: `已更新到 ${result.version}，重启生效`,
+              },
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
   const manager = createSqliteMemoryManager({ dbPath, pinQuota });
   const capture = { enabled: false, onCompaction: true, maxCandidates: 8, ...config.data.capture };
 
