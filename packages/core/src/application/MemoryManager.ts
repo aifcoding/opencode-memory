@@ -15,6 +15,20 @@ import type {
 import { renderPinnedBlock } from '../render/pinned-context.js';
 import type { MemoryStore } from '../ports/MemoryStore.js';
 import { MemoryValidationError } from '../errors.js';
+import {
+  buildRecallResult,
+  MEMORY_PROJECTIONS,
+  type MemoryProjection,
+  type RecallHit,
+  type RecallMemoriesInput,
+  type RecallMemoriesResult,
+  resolveRecallBudget,
+} from '../domain/recall.js';
+import {
+  parseMemoryReference,
+  type ReadReferenceInput,
+  type ReadReferenceResult,
+} from '../domain/ref.js';
 import type {
   ArchiveSummaryResult,
   DeleteContextValueResult,
@@ -22,7 +36,6 @@ import type {
   PinResult,
   PinnedContext,
   ReadMemoryResult,
-  RecallMemoriesResult,
   RecallSummariesResult,
   UnpinResult,
 } from '../domain/results.js';
@@ -51,11 +64,6 @@ export interface StoreMemoryInput {
   scope?: ScopeRef;
   origin?: Origin;
   trust?: Trust;
-}
-export interface RecallMemoriesInput {
-  query: string;
-  scope?: ScopeRef;
-  limit?: number;
 }
 export interface ListMemoriesInput {
   scope?: ScopeRef;
@@ -130,16 +138,42 @@ export class MemoryManager {
   }
   async recallMemories(input: RecallMemoriesInput): Promise<RecallMemoriesResult> {
     this.nonEmpty(input.query, 'query');
-    const hits = this.store.search(input.query, {
-      scope: input.scope ?? this.options.defaultScope,
-      limit: this.limit(input.limit),
-    });
-    return {
-      memories: hits.flatMap((hit) => {
+    const requestedProjection: MemoryProjection = input.projection ?? 'summary';
+    if (!MEMORY_PROJECTIONS.includes(requestedProjection))
+      throw new MemoryValidationError('projection must be one of title, summary, full');
+    const budget = resolveRecallBudget(input.budget);
+    const hits: RecallHit[] = this.store
+      .search(input.query, {
+        scope: input.scope ?? this.options.defaultScope,
+        limit: this.limit(input.limit),
+      })
+      .flatMap((hit) => {
         const memory = this.store.get(hit.id);
         return memory && memory.deletedAt == null ? [{ memory, score: hit.score }] : [];
-      }),
-    };
+      });
+    return buildRecallResult(hits, requestedProjection, budget);
+  }
+  async readReference(input: ReadReferenceInput): Promise<ReadReferenceResult> {
+    const reference = parseMemoryReference(input.ref);
+    if (reference.kind === 'memory') {
+      const memory = this.lookup(reference.id, input.scope);
+      if (!memory) return { status: 'not_found', reference };
+      if (memory.deletedAt != null) return { status: 'deleted', reference };
+      return { status: 'found', reference, value: { kind: 'memory', value: memory } };
+    }
+    if (reference.kind === 'candidate') {
+      if (!this.store.readMemoryCandidate) return { status: 'unsupported', reference };
+      const result = this.store.readMemoryCandidate({
+        id: reference.id,
+        scope: input.scope ?? this.options.defaultScope,
+      });
+      if (result.status === 'not_found') return { status: 'not_found', reference };
+      return { status: 'found', reference, value: { kind: 'candidate', value: result.candidate } };
+    }
+    if (!this.store.getSummary) return { status: 'unsupported', reference };
+    const summary = this.store.getSummary(reference.id);
+    if (!summary) return { status: 'not_found', reference };
+    return { status: 'found', reference, value: { kind: 'summary', value: summary } };
   }
   async listMemories(input: ListMemoriesInput = {}): Promise<MemoryEntry[]> {
     return this.store.listByScope(

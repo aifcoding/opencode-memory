@@ -36,6 +36,7 @@ Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowled
 - **Explicit Pin**: full/summary modes, rendered-size quotas, and non-persistent context injection.
 - **Automatic archiving**: OpenCode compaction summaries are archived idempotently and searchable across sessions.
 - **Reusable Core**: async `MemoryManager` and injectable `Tokenizer`.
+- **Layered recall**: returns title + summary (L1) by default, with a character budget; overflow candidates become a lightweight title-only navigation list, and full content is fetched on demand via `readMemory`.
 - **Safe assisted capture (disabled by default)**: session-derived low-trust candidates require human approval before becoming formal memories.
 
 ## Quick start

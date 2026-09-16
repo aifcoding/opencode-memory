@@ -16,9 +16,12 @@
 - **安全辅助记忆提取**：候选隔离、确定性安全扫描和人工审批流程。
 - **MCP Server**：`@aifcoding/memory-mcp`——官方 MCP SDK v2、stdio transport、固定 project Scope、readonly/full Profile、声明式 Tool Registry 和六个 capability、structuredContent 与文本参考围栏、Candidate list/read/review。
 - **插件自更新**：检查 npm 新版本 + 刷新自身缓存 + 提示重启。
+- **v2.1.0 记忆读路径升级**：L0/L1/L2 分层 Recall、默认 Summary Projection、Detail 字符预算、Overflow 条数/字符双预算（ID/Ref/Title/Trust/Score）、同库稳定 Memory Ref、Core `readReference`、OpenCode/MCP 分层读路径、零数据库迁移。
 
 ## 近期规划
 
+- [ ] **跨数据库稳定 Ref**——仅在导入导出出现真实需求后，增加数据库身份和实体 UUID。
+- [ ] **Summary Scope**——为情景摘要增加明确 Scope 后，再评估是否向 MCP 暴露通用 Ref Resolver。
 - [ ] **召回评测基准**（Recall@K / MRR）——建立可复现数据集，量化现有 FTS 检索效果。
 - [ ] **真实提取 Agent 评测基线**——在人工金标集上运行真实模型，记录 Precision/Recall。
 - [ ] **MCP Streamable HTTP**——在有真实远程使用需求后增加认证、Host/Origin 校验、请求限制和 HTTPS 部署说明；Legacy SSE 仅在兼容性需求明确时考虑。

@@ -47,24 +47,60 @@ export type {
   MemoryManagerOptions,
   MemoryTargetInput,
   PinMemoryInput,
-  RecallMemoriesInput,
   RecallSummariesInput,
   ScopedInput,
   SetContextValueInput,
   StoreMemoryInput,
 } from './application/MemoryManager.js';
+export {
+  DEFAULT_RECALL_BUDGET,
+  DEFAULT_SUMMARY_FALLBACK_CHARACTERS,
+  MEMORY_PROJECTIONS,
+} from './domain/recall.js';
+export type {
+  FullMemoryProjection,
+  MemoryProjection,
+  ProjectedMemory,
+  ProjectedMemoryRecallItem,
+  RecallBudget,
+  RecallBudgetInput,
+  RecallHit,
+  RecallMemoriesInput,
+  RecallMemoriesResult,
+  RecallMemoryBase,
+  RecallOverflowItem,
+  SummaryMemoryProjection,
+  SummarySource,
+  TitleMemoryProjection,
+} from './domain/recall.js';
+export {
+  candidateRef,
+  memoryRef,
+  parseMemoryReference,
+  summaryRef,
+} from './domain/ref.js';
+export type {
+  MemoryRef,
+  MemoryReference,
+  MemoryReferenceKind,
+  ReadReferenceInput,
+  ReadReferenceResult,
+  ReferenceValue,
+} from './domain/ref.js';
 export type {
   ArchiveSummaryResult,
   DeleteContextValueResult,
   ForgetMemoryResult,
-  MemoryRecallItem,
   PinResult,
   PinnedContext,
   ReadMemoryResult,
-  RecallMemoriesResult,
   RecallSummariesResult,
   SummaryEntry,
   SummaryRecallItem,
   UnpinResult,
 } from './domain/results.js';
-export { MemoryValidationError, DuplicateMemoryError } from './errors.js';
+export {
+  DuplicateMemoryError,
+  InvalidMemoryReferenceError,
+  MemoryValidationError,
+} from './errors.js';

@@ -5,7 +5,11 @@ import { readTools } from './tools/memory-read.js';
 import { writeTools } from './tools/memory-write.js';
 import { pinTools } from './tools/pins.js';
 import { profileCapabilities, registerAllowed } from './tools/registry.js';
-import type { MemoryMcpProfile, MemoryMcpToolContext } from './tools/types.js';
+import type {
+  MemoryMcpProfile,
+  MemoryMcpRecallConfig,
+  MemoryMcpToolContext,
+} from './tools/types.js';
 import { errorToolResult } from './render/tool-result.js';
 
 export interface MemoryMcpServerOptions {
@@ -17,6 +21,7 @@ export interface MemoryMcpServerOptions {
   previewLength?: number;
   writeTrust?: 'high' | 'low';
   allowCandidateReview?: boolean;
+  recall?: Partial<MemoryMcpRecallConfig>;
 }
 
 export function createMemoryMcpServer(options: MemoryMcpServerOptions): McpServer {
@@ -50,6 +55,29 @@ export function createMemoryMcpServer(options: MemoryMcpServerOptions): McpServe
   )
     throw new Error('Invalid MCP allowCandidateReview');
   const profile = options.profile ?? 'readonly';
+  const recall: MemoryMcpRecallConfig = {
+    maxCharacters: options.recall?.maxCharacters ?? 3000,
+    maxOverflowItems: options.recall?.maxOverflowItems ?? 10,
+    maxOverflowCharacters: options.recall?.maxOverflowCharacters ?? 1500,
+  };
+  if (
+    !Number.isInteger(recall.maxCharacters) ||
+    recall.maxCharacters < 1 ||
+    recall.maxCharacters > 20000
+  )
+    throw new Error('Invalid MCP recall maxCharacters');
+  if (
+    !Number.isInteger(recall.maxOverflowItems) ||
+    recall.maxOverflowItems < 0 ||
+    recall.maxOverflowItems > 20
+  )
+    throw new Error('Invalid MCP recall maxOverflowItems');
+  if (
+    !Number.isInteger(recall.maxOverflowCharacters) ||
+    recall.maxOverflowCharacters < 0 ||
+    recall.maxOverflowCharacters > 10000
+  )
+    throw new Error('Invalid MCP recall maxOverflowCharacters');
   const capabilities = profileCapabilities[profile].filter(
     (capability) => options.allowCandidateReview || capability !== 'candidate:review',
   );
@@ -60,8 +88,9 @@ export function createMemoryMcpServer(options: MemoryMcpServerOptions): McpServe
     maxLimit,
     previewLength,
     writeTrust: options.writeTrust ?? 'low',
+    recall,
   };
-  const server = new McpServer({ name: 'memory-mcp', version: '0.1.0' });
+  const server = new McpServer({ name: 'memory-mcp', version: '0.2.0' });
   for (const definition of registerAllowed(
     [...readTools, ...writeTools, ...pinTools, ...candidateTools],
     capabilities,

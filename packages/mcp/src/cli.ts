@@ -25,6 +25,7 @@ try {
     defaultLimit: config.limits?.defaultLimit ?? 10,
     maxLimit: config.limits?.maxLimit ?? 50,
     previewLength: config.limits?.previewLength ?? 500,
+    recall: config.recall,
   });
   const transport = new StdioServerTransport();
   let closed = false;

@@ -25,7 +25,22 @@ OpenCode 本地持久记忆插件，基于 [`@aifcoding/memory-core`](https://gi
 
 `dbPath` 必须是绝对路径；默认路径为
 `$HOME/.local/share/opencode/memory/memory.db`，默认 `pinQuota` 为 8000 字符。
-更多功能、配置和工具说明见仓库根目录的 [`README.md`](https://github.com/aifcoding/opencode-memory/blob/main/README.md)。
+
+Recall 分层召回配置（可选，走默认值即可）：
+
+```jsonc
+{ "plugin": [["@aifcoding/opencode-memory", {
+  "recall": {
+    "maxCharacters": 3000,
+    "maxOverflowItems": 10,
+    "maxOverflowCharacters": 1500
+  }
+}]] }
+```
+
+`memory_recall` 默认只返回标题+摘要（无摘要时回退正文前 200 字符），预算外候选以轻量 Ref 列表返回，全文用 `memory_read` 获取。
+
+更多功能、配置和工具说明见仓库根目录的 [`README.md`](https://github.com/aifcoding/opencode-memory/blob/main/README.md) 和 [`docs/CONFIGURATION.md`](https://github.com/aifcoding/opencode-memory/blob/main/docs/CONFIGURATION.md)。
 
 ## OpenCode adapter overview
 
@@ -201,7 +216,7 @@ memory_store(
 | 工具 | 说明 | 参数 |
 |---|---|---|
 | `memory_store` | 存储一条长期记忆，适合保存个人偏好、环境事实、决策和经验教训 | `title: string` 必填；`content: string` 必填；`type?: "preference" \| "fact" \| "decision" \| "solution" \| "convention"`，默认 `"fact"`；`tags?: string[]`，默认 `[]` |
-| `memory_recall` | 检索已存记忆；有查询但无匹配时返回空，不回退最近条目 | `query: string` 必填 |
+| `memory_recall` | 分层检索：默认返回标题+摘要（无摘要回退正文前 200 字），预算外候选返回标题导航，全文用 `memory_read` | `query: string` 必填；`maxCharacters?: number`（1–20000） |
 | `memory_ls` | 按更新时间倒序列出记忆 | `limit?: number`，默认 `20` |
 | `memory_read` | 按 ID 读取记忆完整内容 | `id: number` 必填 |
 | `memory_forget` | 软删除记忆 | `id: number` 必填 |
@@ -400,7 +415,7 @@ These keys are scoped by `sessionID` and persist (no auto-cleanup in the current
 | Tool | Description | Arguments |
 |---|---|---|
 | `memory_store` | Store a long-term memory (preferences, facts, decisions, lessons learned) | `title: string` required; `content: string` required; `type?: "preference" \| "fact" \| "decision" \| "solution" \| "convention"`, default `"fact"`; `tags?: string[]`, default `[]` |
-| `memory_recall` | Search stored memories; returns empty when nothing matches | `query: string` required |
+| `memory_recall` | Layered search; returns title + summary (or first 200 chars); overflow candidates as title-only refs; full content via `memory_read` | `query: string` required; `maxCharacters?: number` (1–20000) |
 | `memory_ls` | List memories, most recently updated first | `limit?: number`, default `20` |
 | `memory_read` | Read a memory's full content by ID | `id: number` required |
 | `memory_forget` | Soft-delete a memory | `id: number` required |

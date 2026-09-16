@@ -9,6 +9,12 @@ export type MemoryMcpCapability =
   | 'candidate:read'
   | 'candidate:review';
 export type MemoryMcpProfile = 'readonly' | 'full';
+/** Server-side recall budget; `memory_search.maxCharacters` may override only the Detail budget. */
+export interface MemoryMcpRecallConfig {
+  maxCharacters: number;
+  maxOverflowItems: number;
+  maxOverflowCharacters: number;
+}
 export interface MemoryMcpToolContext {
   manager: MemoryManager;
   scope: ScopeRef;
@@ -16,6 +22,7 @@ export interface MemoryMcpToolContext {
   maxLimit: number;
   previewLength: number;
   writeTrust: 'high' | 'low';
+  recall: MemoryMcpRecallConfig;
 }
 export interface MemoryMcpToolDefinition {
   name: string;

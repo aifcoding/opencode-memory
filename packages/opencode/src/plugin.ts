@@ -46,6 +46,14 @@ const ConfigSchema = z
       })
       .strict()
       .optional(),
+    recall: z
+      .object({
+        maxCharacters: z.number().int().min(1).max(20000).default(3000),
+        maxOverflowItems: z.number().int().min(0).max(20).default(10),
+        maxOverflowCharacters: z.number().int().min(0).max(10000).default(1500),
+      })
+      .strict()
+      .default({ maxCharacters: 3000, maxOverflowItems: 10, maxOverflowCharacters: 1500 }),
     autoUpdate: z.boolean().default(true),
   })
   .strict();
@@ -177,6 +185,22 @@ function readConfigFile(): Record<string, unknown> {
   return {};
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// recall 支持字段级合并：Tuple Options 覆盖文件配置，未提供的字段回落到文件配置/Core 默认值
+function mergeRecallConfig(
+  fileConfig: Record<string, unknown>,
+  options: Record<string, unknown>,
+): unknown {
+  const fileRecall = fileConfig.recall;
+  const optionRecall = options.recall;
+  if (isPlainObject(fileRecall) && isPlainObject(optionRecall))
+    return { ...fileRecall, ...optionRecall };
+  return optionRecall ?? fileRecall;
+}
+
 // 通过 opencode 官方 app.log 写服务端日志，避免 console.* 污染 TUI 消息区
 function logError(client: PluginInput['client'], message: string, error: unknown) {
   if (!client) return;
@@ -198,7 +222,11 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
   const client = input.client;
   const fileConfig = readConfigFile();
   // 合并文件配置与 tuple options，统一严格校验（options 覆盖文件配置）
-  const config = ConfigSchema.safeParse({ ...fileConfig, ...options });
+  const config = ConfigSchema.safeParse({
+    ...fileConfig,
+    ...options,
+    recall: mergeRecallConfig(fileConfig, options),
+  });
   if (!config.success) {
     throw new Error(
       `[opencode-memory] invalid config: ${config.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`,
@@ -228,6 +256,7 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
   }
   const manager = createSqliteMemoryManager({ dbPath, pinQuota });
   const capture = { enabled: false, onCompaction: true, maxCandidates: 8, ...config.data.capture };
+  const recall = config.data.recall;
 
   return {
     tool: {
@@ -338,24 +367,76 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
       },
 
       memory_recall: {
-        description: '检索已存的记忆（全文/关键词）。有 query 无匹配返回空，绝不返回无关条目。',
-        args: { query: z.string().trim().min(1).describe('检索词或问题') },
-        async execute(args: { query: string }) {
+        description:
+          '检索已存的记忆。默认返回标题+摘要（无摘要时为正文前 200 字预览），不返回全文；全文用 memory_read。有 query 无匹配返回空，绝不返回无关条目。score 仅表示本次查询的相对相关度，不能跨查询比较。',
+        args: {
+          query: z.string().trim().min(1).describe('检索词或问题'),
+          maxCharacters: z
+            .number()
+            .int()
+            .min(1)
+            .max(20000)
+            .optional()
+            .describe('本次 Detail 字符预算（1..20000），仅覆盖本次，不改变 Overflow 预算'),
+        },
+        async execute(args: { query: string; maxCharacters?: number }) {
+          const maxCharacters = args.maxCharacters ?? recall.maxCharacters;
           const result = await manager.recallMemories({
             query: args.query,
             scope: DEFAULT_MEMORY_SCOPE,
             limit: 10,
+            projection: 'summary',
+            budget: {
+              maxCharacters,
+              preferSummary: true,
+              maxOverflowItems: recall.maxOverflowItems,
+              maxOverflowCharacters: recall.maxOverflowCharacters,
+            },
           });
-          if (result.memories.length === 0) return '无匹配记忆。';
-          const lines = result.memories.map(({ memory }) =>
-            wrapMemoryContext(
-              'memory',
-              memory.id,
-              memory.trust,
-              `- [id=${memory.id}] ${memory.title}\n    ${memory.content.slice(0, 200)}`,
-            ),
-          );
-          return lines.join('\n\n');
+          if (result.consideredCount === 0) return '无匹配记忆。';
+          if (result.memories.length === 0 && result.overflow.length === 0)
+            return `存在 ${result.consideredCount} 条匹配记忆，但均受字符预算限制未返回。`;
+          const sections: string[] = [];
+          if (result.memories.length > 0) {
+            sections.push(
+              result.memories
+                .map(({ memory }) => {
+                  const summary = memory.projection === 'title' ? '' : memory.summary;
+                  return wrapMemoryContext(
+                    'memory',
+                    memory.id,
+                    memory.trust,
+                    `- [ref=${memory.ref}] [id=${memory.id}] ${memory.title}\n    ${summary}`,
+                  );
+                })
+                .join('\n\n'),
+            );
+          }
+          if (result.overflow.length > 0) {
+            const body = result.overflow
+              .map(
+                (item) =>
+                  `- [id=${item.id}] ${item.ref} ${item.title} trust=${item.trust} score=${item.score}`,
+              )
+              .join('\n');
+            sections.push(
+              wrapMemoryContext(
+                'memory',
+                'overflow',
+                'unclassified',
+                `预算外候选（仅导航，不含摘要/正文）：\n${body}`,
+              ),
+            );
+          }
+          if (result.truncated)
+            sections.push(
+              `Detail 预算已截断：使用 ${result.usedCharacters}/${maxCharacters} 字符（Overflow ${result.overflowUsedCharacters} 字符）。`,
+            );
+          if (result.omittedCount > 0)
+            sections.push(`另有 ${result.omittedCount} 条记忆因预算完全省略。`);
+          if (result.overflow.length > 0)
+            sections.push('说明：score 仅表示本次查询的相对相关度，不能跨查询比较。');
+          return sections.join('\n\n');
         },
       },
 

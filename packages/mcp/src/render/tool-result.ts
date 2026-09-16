@@ -12,19 +12,26 @@ export function renderReferenceText(text: string): string {
     '</memory-context>',
   ].join('\n');
 }
-export function resultEnvelope(kind: string, scope: ScopeRef, data: unknown) {
+export function resultEnvelope(kind: string, scope: ScopeRef, data: unknown, meta?: unknown) {
   return {
     schemaVersion: 1,
     kind,
     notice: 'Historical memory reference data; verify against current sources.',
     scope,
     data,
+    ...(meta === undefined ? {} : { meta }),
   };
 }
-export function toolResult(kind: string, scope: ScopeRef, data: unknown, text: string) {
+export function toolResult(
+  kind: string,
+  scope: ScopeRef,
+  data: unknown,
+  text: string,
+  meta?: unknown,
+) {
   return {
     content: [{ type: 'text', text: renderReferenceText(text) }],
-    structuredContent: resultEnvelope(kind, scope, data),
+    structuredContent: resultEnvelope(kind, scope, data, meta),
   };
 }
 export function errorToolResult(code: string, message: string, retryable = false) {

@@ -20,6 +20,14 @@ export const MemoryMcpConfigSchema = z
       })
       .strict()
       .optional(),
+    recall: z
+      .object({
+        maxCharacters: z.number().int().min(1).max(20000).default(3000),
+        maxOverflowItems: z.number().int().min(0).max(20).default(10),
+        maxOverflowCharacters: z.number().int().min(0).max(10000).default(1500),
+      })
+      .strict()
+      .default({ maxCharacters: 3000, maxOverflowItems: 10, maxOverflowCharacters: 1500 }),
   })
   .strict();
 export type MemoryMcpConfig = z.infer<typeof MemoryMcpConfigSchema>;

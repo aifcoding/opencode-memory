@@ -20,6 +20,7 @@ import { defaultTokenizer, type Tokenizer } from '../retrieval/tokenizer.js';
 import { migrate } from './migrations.js';
 import { checkCapabilities } from './capability.js';
 import { DuplicateMemoryError } from '../errors.js';
+import type { SummaryEntry } from '../domain/results.js';
 import type {
   CreateMemoryInput,
   ListByScopeOptions,
@@ -493,6 +494,22 @@ export class SqliteMemoryStore implements MemoryStore {
       createdAt: r.created_at,
       score: -(r.bm ?? 0),
     }));
+  }
+
+  getSummary(id: string): SummaryEntry | null {
+    const row = this.db
+      .query(`SELECT id, session_id, summary_text, created_at FROM session_summaries WHERE id = ?`)
+      .get(id) as
+      | { id: string; session_id: string; summary_text: string; created_at: number }
+      | undefined;
+    return row
+      ? {
+          id: row.id,
+          contextKey: row.session_id,
+          text: row.summary_text,
+          createdAt: row.created_at,
+        }
+      : null;
   }
 
   close(): void {

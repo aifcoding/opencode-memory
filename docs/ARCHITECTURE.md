@@ -244,6 +244,54 @@ OpenCode Adapter 和 MCP Adapter 可指向同一个 SQLite 文件，但必须使
 | 输出 | structuredContent + 文本围栏 | 兼容不同 MCP Client |
 | HTTP/SSE | 暂不实现 | 避免提前引入认证和远程攻击面 |
 
+## 记忆读路径
+
+读路径采用「分层投影 + 两阶段预算 + 稳定 Ref」：
+
+```text
+query → Tokenizer → FTS5 OR MATCH → BM25 score 排序
+  → L0/L1/L2 Projection → Detail Budget → Overflow Budget → Adapter
+```
+
+### L0/L1/L2
+
+现有字段直接对应：
+
+| 层级 | Projection | 字段 |
+|---|---|---|
+| L0 | `title` | `title` |
+| L1 | `summary` | `title + summary` |
+| L2 | `full` | `title + content` |
+
+`recallMemories` 默认使用 `summary`；只有显式 `projection=full` 或后续 `readMemory/readReference` 才返回完整正文。Summary 为空时使用正文前 200 个 UTF-16 code unit 作为 `content_preview`，不修改数据库、不调用模型。
+
+### 两阶段预算
+
+第一阶段按 BM25 score 降序生成 Detail 连续前缀：`≤ maxCharacters` 加入；`> maxCharacters` 时 full 可尝试降级 summary；仍放不下 → 停止 Detail、进入 Overflow。
+
+第二阶段将剩余候选降级为 L0（id + ref + title + trust + score），同时受 `maxOverflowItems` 和 `maxOverflowCharacters` 限制。两个阶段都保持连续 score 前缀，不跳过高分大条目去填充低分小条目。
+
+### 结果元数据
+
+`consideredCount / usedCharacters / overflowUsedCharacters / truncated / degradedCount / omittedCount`。语义：consideredCount = Store 本次按 limit 取回的候选数；truncated = 至少一条未按 Detail 返回；degradedCount = Full 降级 Summary 数量；omittedCount = Detail 和 Overflow 均未返回的数量；limit 不算预算截断。恒等关系 `consideredCount === memories.length + overflow.length + omittedCount`。
+
+字符数按 JS `string.length`（UTF-16 code unit）计算，不等于模型 Token。Core 预算不含 Adapter 围栏/JSON/协议开销。
+
+### Stable Memory Ref
+
+`memory://local/memories/{id}` / `summaries/{encoded-id}` / `candidates/{id}`。Ref 是运行时计算值、不存库 → 本升级零迁移。只保证同一数据库内稳定。
+
+### readReference
+
+Core 提供 `readReference({ref, scope})`：Memory/Candidate 执行 Scope 校验；Summary 当前无 Scope、仅按全局唯一 ID 读取；Store 不支持 → `unsupported`；软删 Memory → `deleted`。由于 Summary 无 Scope，MCP 不暴露通用 `readReference`，避免绕过固定 project Scope 和 Candidate Capability。
+
+### Adapter 策略
+
+- OpenCode：`memory_recall` → 固定 Summary Projection；`memory_read` → Full
+- MCP：`memory_search` → Summary Projection + Budget Meta；`memory_read` → Full
+
+两个 Adapter 均允许单次 `maxCharacters` 覆盖，但不向模型暴露 Projection 和 Overflow 配置。
+
 ## 数据模型
 
 ```sql

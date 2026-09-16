@@ -1,13 +1,4 @@
 import type { MemoryEntry } from './types.js';
-/** One memory returned by full-text retrieval. */
-export interface MemoryRecallItem {
-  memory: MemoryEntry;
-  score: number;
-}
-/** Structured memory retrieval response. */
-export interface RecallMemoriesResult {
-  memories: MemoryRecallItem[];
-}
 
 /** Structured result distinguishing missing and soft-deleted memories. */
 export type ReadMemoryResult =

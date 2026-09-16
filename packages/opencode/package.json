@@ -1,6 +1,6 @@
 {
   "name": "@aifcoding/opencode-memory",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "opencode 本地持久记忆插件",
   "type": "module",
   "main": "dist/plugin.js",
@@ -20,7 +20,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@aifcoding/memory-core": "^0.2.0",
+    "@aifcoding/memory-core": "^0.3.0",
     "jsonc-parser": "^3.3.1",
     "zod": "4.1.8"
   },

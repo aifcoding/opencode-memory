@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
 import type { MemoryManager, ScopeRef } from '@aifcoding/memory-core';
-import { profileCapabilities, registerAllowed } from '../src/tools/registry';
+import { profileCapabilities, registerAllowed, mcpOutputSchema } from '../src/tools/registry';
+import { MemoryMcpConfigSchema } from '../src/config';
+import { createMemoryMcpServer } from '../src/server';
 import { errorToolResult } from '../src/render/tool-result';
 import { readTools } from '../src/tools/memory-read';
 import { writeTools } from '../src/tools/memory-write';
@@ -39,6 +41,7 @@ function ctx(
     maxLimit: 50,
     previewLength: 500,
     writeTrust: 'low',
+    recall: { maxCharacters: 3000, maxOverflowItems: 10, maxOverflowCharacters: 1500 },
     ...override,
   };
 }
@@ -262,6 +265,229 @@ describe('MCP candidate tools', () => {
     await withManager(async (manager) => {
       const result = await tool('memory_candidate_list').execute({}, ctx(manager, SCOPE_A));
       expect((result.structuredContent as any).data.length).toBe(0);
+    });
+  });
+});
+
+describe('MCP layered recall adapter', () => {
+  test('10.8 memory_search 返回 preview/ref/previewSource（stored_summary）', async () => {
+    await withManager(async (manager) => {
+      const stored = await manager.storeMemory({
+        title: 'stored title',
+        content: 'stored body',
+        summary: 'stored summary',
+        scope: SCOPE_A,
+        origin: 'agent',
+        trust: 'low',
+      });
+      const result = await tool('memory_search').execute(
+        { query: 'stored' },
+        ctx(manager, SCOPE_A),
+      );
+      const rows = (result.structuredContent as any).data as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].ref).toBe(`memory://local/memories/${stored.id}`);
+      expect(rows[0].preview).toBe('stored summary');
+      expect(rows[0].previewSource).toBe('stored_summary');
+    });
+  });
+
+  test('10.8 memory_search preview 回退 content_preview', async () => {
+    await withManager(async (manager) => {
+      await manager.storeMemory({
+        title: 'preview title',
+        content: 'preview body text',
+        scope: SCOPE_A,
+        origin: 'agent',
+        trust: 'low',
+      });
+      const result = await tool('memory_search').execute(
+        { query: 'preview' },
+        ctx(manager, SCOPE_A),
+      );
+      const rows = (result.structuredContent as any).data as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].preview).toBe('preview body text');
+      expect(rows[0].previewSource).toBe('content_preview');
+    });
+  });
+
+  test('10.9 memory_search meta 通过 outputSchema 校验', async () => {
+    await withManager(async (manager) => {
+      await manager.storeMemory({
+        title: 'meta title',
+        content: 'meta body',
+        summary: 'meta summary',
+        scope: SCOPE_A,
+        origin: 'agent',
+        trust: 'low',
+      });
+      const result = await tool('memory_search').execute({ query: 'meta' }, ctx(manager, SCOPE_A));
+      const envelope = result.structuredContent as any;
+      expect(envelope.meta.consideredCount).toBe(1);
+      expect(typeof envelope.meta.usedCharacters).toBe('number');
+      expect(envelope.meta.overflowUsedCharacters).toBe(0);
+      expect(envelope.meta.truncated).toBe(false);
+      expect(envelope.meta.degradedCount).toBe(0);
+      expect(envelope.meta.omittedCount).toBe(0);
+      expect(envelope.meta.overflow).toEqual([]);
+      expect(() => mcpOutputSchema.parse(envelope)).not.toThrow();
+    });
+  });
+
+  test('10.10 memory_search Overflow meta 与 outputSchema', async () => {
+    await withManager(async (manager) => {
+      for (const n of [1, 2, 3])
+        await manager.storeMemory({
+          title: `overflow-${n}`,
+          content: `overflow ${n} body`,
+          scope: SCOPE_A,
+          origin: 'agent',
+          trust: 'low',
+        });
+      const result = await tool('memory_search').execute(
+        { query: 'overflow', maxCharacters: 10 },
+        ctx(manager, SCOPE_A),
+      );
+      const envelope = result.structuredContent as any;
+      expect(envelope.meta.truncated).toBe(true);
+      expect(envelope.meta.overflow.length).toBeGreaterThan(0);
+      const item = envelope.meta.overflow[0];
+      expect(item.projection).toBe('title');
+      expect(typeof item.id).toBe('number');
+      expect(typeof item.ref).toBe('string');
+      expect(typeof item.title).toBe('string');
+      expect(item.trust).toBe('low');
+      expect(typeof item.score).toBe('number');
+      expect(() => mcpOutputSchema.parse(envelope)).not.toThrow();
+      const text = (result.content as any)[0].text as string;
+      expect(text).toContain('trust=low');
+    });
+  });
+
+  test('10.11 memory_search maxCharacters 只覆盖本次 Detail Budget', async () => {
+    await withManager(async (manager) => {
+      for (const n of [1, 2])
+        await manager.storeMemory({
+          title: `limit-${n}`,
+          content: `limit ${n} body`,
+          scope: SCOPE_A,
+          origin: 'agent',
+          trust: 'low',
+        });
+      const wide = await tool('memory_search').execute({ query: 'limit' }, ctx(manager, SCOPE_A));
+      expect((wide.structuredContent as any).meta.truncated).toBe(false);
+      const narrow = await tool('memory_search').execute(
+        { query: 'limit', maxCharacters: 10 },
+        ctx(manager, SCOPE_A),
+      );
+      expect((narrow.structuredContent as any).meta.truncated).toBe(true);
+    });
+  });
+
+  test('10.11 memory_read 保持全文', async () => {
+    await withManager(async (manager) => {
+      const stored = await manager.storeMemory({
+        title: 'full title',
+        content: 'full content body',
+        scope: SCOPE_A,
+        origin: 'agent',
+        trust: 'low',
+      });
+      const result = await tool('memory_read').execute({ id: stored.id }, ctx(manager, SCOPE_A));
+      const data = (result.structuredContent as any).data;
+      expect(data.status).toBe('found');
+      expect(data.memory.content).toBe('full content body');
+    });
+  });
+
+  test('10.12 不注册 readReference 工具', () => {
+    const names = ALL_TOOLS.map((definition) => definition.name);
+    expect(names).not.toContain('memory_reference_read');
+    const readonly = registerAllowed(ALL_TOOLS, profileCapabilities.readonly).map((t) => t.name);
+    expect(readonly.sort()).toEqual(['memory_list', 'memory_read', 'memory_search']);
+  });
+
+  test('P0-1 命中但全被省略时不返回 No matching memory', async () => {
+    await withManager(async (manager) => {
+      await manager.storeMemory({
+        title: 'omit',
+        content: 'omit body',
+        scope: SCOPE_A,
+        origin: 'agent',
+        trust: 'low',
+      });
+      const result = await tool('memory_search').execute(
+        { query: 'omit', maxCharacters: 1 },
+        ctx(manager, SCOPE_A, {
+          recall: { maxCharacters: 3000, maxOverflowItems: 0, maxOverflowCharacters: 1500 },
+        }),
+      );
+      const text = (result.content as any)[0].text as string;
+      expect(text).not.toContain('No matching memory.');
+      expect(text).toContain('1 additional matches were omitted by the overflow budget.');
+
+      const empty = await tool('memory_search').execute(
+        { query: 'zzz-no-match' },
+        ctx(manager, SCOPE_A),
+      );
+      expect((empty.content as any)[0].text).toContain('No matching memory.');
+    });
+  });
+
+  test('P1-4 文本 fallback 带语义标签', async () => {
+    await withManager(async (manager) => {
+      for (const n of [1, 2, 3])
+        await manager.storeMemory({
+          title: `label-${n}`,
+          content: `label ${n} body`,
+          summary: `label summary ${n}`,
+          scope: SCOPE_A,
+          origin: 'agent',
+          trust: 'low',
+        });
+      const result = await tool('memory_search').execute(
+        { query: 'label', maxCharacters: 25 },
+        ctx(manager, SCOPE_A),
+      );
+      const text = (result.content as any)[0].text as string;
+      expect(text).toContain('Detailed matches:');
+      expect(text).toContain('Additional title-only matches:');
+    });
+  });
+
+  test('8.1 MCP recall 配置默认值与越界拒绝', () => {
+    const base = { dbPath: '/tmp/x.db', scope: { scope: 'project', scopeKey: '/p' } };
+    expect(MemoryMcpConfigSchema.parse(base).recall).toEqual({
+      maxCharacters: 3000,
+      maxOverflowItems: 10,
+      maxOverflowCharacters: 1500,
+    });
+    expect(
+      MemoryMcpConfigSchema.parse({
+        ...base,
+        recall: { maxCharacters: 20000, maxOverflowItems: 0, maxOverflowCharacters: 10000 },
+      }).recall,
+    ).toEqual({ maxCharacters: 20000, maxOverflowItems: 0, maxOverflowCharacters: 10000 });
+    expect(() => MemoryMcpConfigSchema.parse({ ...base, recall: { maxCharacters: 0 } })).toThrow();
+    expect(() =>
+      MemoryMcpConfigSchema.parse({ ...base, recall: { maxOverflowItems: 21 } }),
+    ).toThrow();
+    expect(() =>
+      MemoryMcpConfigSchema.parse({ ...base, recall: { maxOverflowCharacters: 10001 } }),
+    ).toThrow();
+    expect(() => MemoryMcpConfigSchema.parse({ ...base, recall: { unknown: 1 } })).toThrow();
+  });
+
+  test('8.1 server recall 配置非法时 fail-fast', async () => {
+    await withManager(async (manager) => {
+      expect(() =>
+        createMemoryMcpServer({
+          manager,
+          scope: SCOPE_A,
+          recall: { maxCharacters: 0 },
+        } as any),
+      ).toThrow();
     });
   });
 });

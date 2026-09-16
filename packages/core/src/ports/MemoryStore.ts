@@ -18,6 +18,7 @@ import type {
   ReadMemoryCandidateResult,
   ReviewMemoryCandidateResult,
 } from '../domain/capture.js';
+import type { SummaryEntry } from '../domain/results.js';
 
 export interface CreateMemoryInput {
   scope: ScopeRef;
@@ -106,6 +107,8 @@ export interface MemoryStore {
   search(query: string, options?: SearchOptions): SearchHit[];
   archiveSummary(input: SummaryArchiveInput): boolean;
   searchSummaries(query: string, limit?: number): SummaryResult[];
+  /** Optional capability: read one summary by its globally unique id. */
+  getSummary?(id: string): SummaryEntry | null;
 
   setKv(contextKey: string, key: string, value: string): void;
   getKv(contextKey: string, key: string): string | null;

@@ -35,6 +35,31 @@ const manager = createSqliteMemoryManager({ dbPath: '/tmp/memory.db' });
 
 `PinResult` 会区分 `pinned`、`quota_exceeded`、`summary_required`、`trust_denied`、`not_found` 和 `deleted`。`getPinnedContext` 返回 `{ entries, text, size }`。
 
+### 分层 Recall
+
+`recallMemories` 统一返回投影结果，默认 `summary`（标题+摘要）；只有显式 `projection: 'full'` 或 `readMemory/readReference` 才返回完整正文。没有已保存摘要时，summary 回退正文前 200 字符（`summarySource=content_preview`，不改库）。
+
+字符预算（可部分覆盖，其余用默认值）：
+
+```ts
+{
+  maxCharacters: 3000,         // Detail 标题/摘要预算（1..20000）
+  preferSummary: true,         // full 放不下时降级 summary
+  maxOverflowItems: 10,        // 溢出导航最多条数（0..20，0=关闭）
+  maxOverflowCharacters: 1500, // 溢出导航字符预算（0..10000）
+}
+```
+
+结果：`memories`（预算内 Detail）+ `overflow`（预算外 L0 导航：id/ref/title/trust/score）+ `consideredCount/usedCharacters/overflowUsedCharacters/truncated/degradedCount/omittedCount`。score 是本次 FTS5/BM25 相对相关度，不可跨查询比较。字符数按 UTF-16 `string.length`，不等于 Token。
+
+### Memory Ref
+
+`memory://local/memories/{id}` / `summaries/{encoded-id}` / `candidates/{id}`。`memoryRef/summaryRef/candidateRef` 生成、`parseMemoryReference` 严格解析。只保证同一数据库内稳定。
+
+### readReference
+
+`readReference({ref, scope})` → `found/not_found/deleted/unsupported`。Memory/Candidate 走 Scope 校验；Summary 当前无 Scope、按全局唯一 ID 读；MCP 不暴露通用 readReference。
+
 ### Scope 与 contextKey
 
 长期知识使用显式 `ScopeRef`（`scope` + `scopeKey`），或使用 `defaultScope`；Context KV 必须显式提供 `contextKey`，Core 不会推断它。
@@ -78,6 +103,14 @@ The main methods are `storeMemory`, `recallMemories`, `listMemories`, `readMemor
 `MemoryManagerOptions` accepts `defaultScope` (default `global/default`), `pinQuota` (default 8000 characters), `defaultOrigin`, and `defaultTrust`. Long-term memories use an explicit `ScopeRef` or `defaultScope`; Context KV requires an explicit `contextKey`, which Core never infers.
 
 Pin results include `pinned`, `quota_exceeded`, `summary_required`, `trust_denied`, `not_found`, and `deleted`. `getPinnedContext` returns `{ entries, text, size }`. `MemoryStore` is the synchronous low-level extension port; Manager is the asynchronous public boundary. `MemoryValidationError` reports invalid input and `DuplicateMemoryError` reports duplicate active content.
+
+### Layered recall
+
+`recallMemories` returns one unified projected result and defaults to the `summary` projection. Use `projection: "full"` or `readMemory` for full content. Default budget: `{ maxCharacters: 3000, preferSummary: true, maxOverflowItems: 10, maxOverflowCharacters: 1500 }`. Overflow entries contain `id/ref/title/trust/score`; scores are query-relative BM25 and must not be compared across queries. Character budgets use `string.length`, not model tokens.
+
+### Memory references
+
+`memory://local/memories/{id}` etc.; `parseMemoryReference` for strict parsing; `readReference` for resolution. Stable only within the same database. Summaries have no Scope, so MCP does not expose a generic reference tool.
 
 ### Capture API
 

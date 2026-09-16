@@ -120,6 +120,28 @@ Full configuration:
 
 Configuration is strictly validated. Unknown fields, relative database paths, and missing project scopes fail startup.
 
+## Recall configuration
+
+```jsonc
+{
+  "recall": {
+    "maxCharacters": 3000,
+    "maxOverflowItems": 10,
+    "maxOverflowCharacters": 1500
+  }
+}
+```
+
+| Option | Default | Range | Description |
+|---|---:|---:|---|
+| `recall.maxCharacters` | `3000` | 1–20000 | Detail character budget |
+| `recall.maxOverflowItems` | `10` | 0–20 | Maximum lightweight Overflow entries |
+| `recall.maxOverflowCharacters` | `1500` | 0–10000 | Independent Overflow character budget |
+
+`memory_search.maxCharacters` overrides only the Detail budget for the current call.
+
+Character counts use JavaScript UTF-16 `string.length`; they are not model-token counts.
+
 ## Fixed project scope
 
 Scope is a server-side security boundary.
@@ -208,7 +230,7 @@ Clients cannot override these fields.
 
 #### `memory_search`
 
-Search formal memories in the fixed scope.
+Search formal memories in the fixed scope. Summary projection only; each `score` is relative to the current query and must not be compared across queries.
 
 Input:
 
@@ -216,25 +238,42 @@ Input:
 {
   query: string;
   limit?: number;
+  maxCharacters?: number; // 1–20000; overrides the Detail budget for this call only
 }
 ```
 
-Output items contain:
+Each Detail item contains:
 
 ```text
 id
+ref           // memory://local/memories/{id}
 title
-preview
+preview       // stored summary, or first 200 chars of content
+previewSource // "stored_summary" | "content_preview"
 type
 tags
 origin
 trust
-score
+score         // query-relative BM25
 scope
 updatedAt
 ```
 
-Search returns a preview rather than the full body. Use `memory_read` for the complete content.
+Structured content keeps `data` as the Detail array and adds a `meta` object:
+
+```ts
+meta: {
+  consideredCount: number;
+  usedCharacters: number;
+  overflowUsedCharacters: number;
+  truncated: boolean;
+  degradedCount: number;
+  omittedCount: number;
+  overflow: Array<{ projection: "title"; id; ref; title; trust; score }>;
+}
+```
+
+Search returns a preview rather than the full body; matches outside the Detail budget are returned as title-only Overflow entries in `meta.overflow`. Use `memory_read` for the complete content.
 
 #### `memory_read`
 
@@ -486,6 +525,8 @@ If multiple adapters share the same database, keep their `@aifcoding/memory-core
 - Server 固定 project Scope
 - 客户端不能传入或覆盖 Scope
 - 同时返回 structuredContent 和带围栏的文本结果
+
+`memory_search` 默认返回标题+摘要（无摘要时回退正文前 200 字），预算外命中以 `meta.overflow` 的标题列表返回；完整正文用 `memory_read`。`score` 只表示本次查询的相对相关度，不能跨查询比较。
 
 最小配置：
 

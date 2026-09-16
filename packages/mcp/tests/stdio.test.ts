@@ -123,14 +123,34 @@ describe('MCP stdio protocol', () => {
     if (dir) rmSync(dir, { recursive: true, force: true });
   });
 
-  test('tools/list exposes exactly the readonly tools over the protocol', async () => {
+  test('10.13 tools/list exposes exactly the readonly tools over the protocol', async () => {
     const response = await call(stdin, reader, 2, 'tools/list');
     const names = (response.result.tools as Array<{ name: string }>).map((t) => t.name).sort();
     expect(names).toEqual(['memory_list', 'memory_read', 'memory_search']);
+    expect(names).not.toContain('memory_reference_read');
+  });
+
+  test('10.13 tools/call memory_search returns budget meta accepted by outputSchema', async () => {
+    const response = await call(stdin, reader, 3, 'tools/call', {
+      name: 'memory_search',
+      arguments: { query: 'anything' },
+    });
+    const envelope = response.result.structuredContent;
+    expect(envelope.kind).toBe('memory_search');
+    expect(Array.isArray(envelope.data)).toBe(true);
+    expect(envelope.meta).toMatchObject({
+      consideredCount: 0,
+      usedCharacters: 0,
+      overflowUsedCharacters: 0,
+      truncated: false,
+      degradedCount: 0,
+      omittedCount: 0,
+      overflow: [],
+    });
   });
 
   test('tools/call runs a readonly tool and returns structuredContent', async () => {
-    const response = await call(stdin, reader, 3, 'tools/call', {
+    const response = await call(stdin, reader, 4, 'tools/call', {
       name: 'memory_list',
       arguments: {},
     });
@@ -141,7 +161,7 @@ describe('MCP stdio protocol', () => {
   });
 
   test('a write tool is not callable on the readonly profile', async () => {
-    const response = await call(stdin, reader, 4, 'tools/call', {
+    const response = await call(stdin, reader, 5, 'tools/call', {
       name: 'memory_store',
       arguments: { title: 'x', content: 'y' },
     });
