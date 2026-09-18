@@ -241,11 +241,10 @@ const plugin: Plugin = async (input: PluginInput, options: Record<string, unknow
     void checkAndRefresh()
       .then((result) => {
         if (result.status === 'updated' && client) {
-          client.app
-            .log({
+          client.tui
+            .showToast({
               body: {
-                service: 'opencode-memory',
-                level: 'info',
+                variant: 'info',
                 message: `已更新到 ${result.version}，重启生效`,
               },
             })
