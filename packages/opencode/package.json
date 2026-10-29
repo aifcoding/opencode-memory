@@ -1,12 +1,13 @@
 {
   "name": "@aifcoding/opencode-memory",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "opencode 本地持久记忆插件",
   "type": "module",
   "main": "dist/plugin.js",
   "module": "dist/plugin.js",
   "exports": {
-    "import": "./dist/plugin.js"
+    ".": "./dist/plugin.js",
+    "./server": "./dist/plugin.js"
   },
   "files": [
     "dist"
