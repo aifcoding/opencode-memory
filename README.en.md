@@ -10,6 +10,10 @@ A local-first, framework-independent AI memory core with adapters. [OpenCode](ht
 
 It gives AI agents memory across three tiers — **long-term knowledge, episodic summaries, and session working memory** — each with its own lifecycle and retrieval strategy. The framework-independent API is provided by `@aifcoding/memory-core`; OpenCode is one adapter. The default implementation stores data in local SQLite; Chinese full-text search is powered by `jieba-wasm` and SQLite FTS5. No database server, no vector service, no external API.
 
+![Memory plugin demo](docs/assets/memory-demo.gif)
+
+*Save → recall in a new session → pin → inject every turn (real tool output)*
+
 ## Choose how to use it
 
 | Goal | Package | Status |
@@ -43,13 +47,25 @@ Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowled
 
 ### Use the OpenCode adapter
 
-Add the package to your OpenCode config (`opencode.json` or `opencode.jsonc`):
+The same package supports OpenCode v1 and v2.
+
+**v1 (1.18.29+)** uses `plugin`:
 
 ```jsonc
 {
   "plugin": ["@aifcoding/opencode-memory"]
 }
 ```
+
+**v2 (2.x)** uses `plugins`:
+
+```jsonc
+{
+  "plugins": [{ "package": "@aifcoding/opencode-memory" }]
+}
+```
+
+v1 uses the object entrypoint's `server()`; v2 uses `setup(ctx)`. Tools, Pin, capture, and compaction archive work in both. v2 has no TUI toast; auto-update messages go to the server log, and local plugin paths must be directories.
 
 OpenCode installs and caches npm plugins with Bun at startup.
 
@@ -271,7 +287,7 @@ The project uses OpenSpec to maintain behavioral specs. Behavior changes should 
 
 | Document | Responsibility |
 |---|---|
-| OpenCode tool parameters | Zod definitions in [`packages/opencode/src/plugin.ts`](packages/opencode/src/plugin.ts) |
+| OpenCode tool parameters | Zod definitions in [`packages/opencode/src/plugin-v1.ts`](packages/opencode/src/plugin-v1.ts) |
 | Core API | [`packages/core/src/index.ts`](packages/core/src/index.ts) |
 | Behavioral semantics | [`openspec/specs/`](openspec/specs/) |
 | Architecture decisions | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
@@ -284,7 +300,7 @@ Recommended flow:
 4. Run `bun test`
 5. Open a pull request explaining the motivation, behavior change, and verification
 
-Keep the implementation, specs, and README tool arguments in sync. Tool interfaces are authoritative in [`plugin.ts`](packages/opencode/src/plugin.ts).
+Keep the implementation, specs, and README tool arguments in sync. Tool interfaces are authoritative in [`plugin-v1.ts`](packages/opencode/src/plugin-v1.ts).
 
 ## License
 

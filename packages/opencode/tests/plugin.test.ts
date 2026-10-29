@@ -27,7 +27,7 @@ test('plugin module exposes only a default export', async () => {
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'opencode-memory-plugin-'));
-  hooks = await plugin({ client: undefined }, { dbPath: join(dir, 'test.db'), pinQuota: 2000 });
+  hooks = await plugin.server({ client: undefined }, { dbPath: join(dir, 'test.db'), pinQuota: 2000 });
 });
 
 afterEach(async () => {
@@ -160,7 +160,7 @@ test('capture filters synthetic Pin overlay from extractor prompt', async () => 
       delete: async () => ({ data: true }),
     },
   };
-  const h = await plugin(
+  const h = await plugin.server(
     { client: mockClient },
     { dbPath: join(dir, 'capture.db'), capture: { enabled: true, agent: 'extractor' } },
   );
@@ -183,7 +183,7 @@ test('session.compacted 自动归档 + 幂等 + 非 compaction 忽略', async ()
     },
   ];
   const mockClient = { session: { messages: async () => ({ data: fakeMessages }) } };
-  const h = await plugin({ client: mockClient }, { dbPath: join(dir, 'archive.db') });
+  const h = await plugin.server({ client: mockClient }, { dbPath: join(dir, 'archive.db') });
   // 触发 compaction 事件（两次，验证幂等）
   await h.event({ event: { type: 'session.compacted', properties: { sessionID: 'ses_x' } } });
   await h.event({ event: { type: 'session.compacted', properties: { sessionID: 'ses_x' } } });
@@ -223,7 +223,7 @@ test('repeated compaction starts the extractor only once', async () => {
       delete: async () => ({ data: true }),
     },
   };
-  const h = await plugin(
+  const h = await plugin.server(
     { client: mockClient },
     { dbPath: join(dir, 'capture-once.db'), capture: { enabled: true, agent: 'extractor' } },
   );

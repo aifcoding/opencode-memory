@@ -7,10 +7,10 @@
 
 ### Requirement: 压缩自动归档
 
-OpenCode Adapter SHALL 在 `session.compacted` 事件发生时提取摘要；Core SHALL 接收稳定 ID、contextKey、文本和时间，幂等归档到 `session_summaries`。
+OpenCode Adapter SHALL 在 v1 `session.compacted` 或 v2 `session.compaction.ended` 事件发生时提取摘要；Core SHALL 接收稳定 ID、contextKey、文本和时间，幂等归档到 `session_summaries`。
 
 #### Scenario: 压缩后归档
-- **WHEN** 会话压缩完成、`session.compacted` 事件触发
+- **WHEN** 会话压缩完成、v1 `session.compacted` 或 v2 `session.compaction.ended` 事件触发
 - **THEN** 读取 compaction agent 生成的摘要文本，写入 `session_summaries`
 
 #### Scenario: 幂等
@@ -31,7 +31,7 @@ OpenCode Adapter SHALL 在 compaction 摘要归档成功后，根据 capture 配
 
 #### Scenario: 默认不提取
 
-- **WHEN** session.compacted 发生但 capture 未启用
+- **WHEN** v1 session.compacted 或 v2 session.compaction.ended 发生但 capture 未启用
 - **THEN** 摘要正常归档，不调用提取 Agent
 
 #### Scenario: 启用自动提取

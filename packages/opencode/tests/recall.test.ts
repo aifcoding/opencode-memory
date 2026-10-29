@@ -20,7 +20,7 @@ async function store(title: string, content: string): Promise<number> {
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'opencode-recall-'));
-  hooks = await plugin({ client: undefined }, { dbPath: join(dir, 'test.db'), autoUpdate: false });
+  hooks = await plugin.server({ client: undefined }, { dbPath: join(dir, 'test.db'), autoUpdate: false });
 });
 
 afterEach(async () => {
@@ -69,7 +69,7 @@ test('10.4 memory_recall 输出 Score 说明文案', async () => {
 });
 
 test('10.5 memory_recall 输出截断与完全省略提示', async () => {
-  const h = await plugin(
+  const h = await plugin.server(
     { client: undefined },
     {
       dbPath: join(dir, 'truncated.db'),
@@ -103,8 +103,8 @@ test('10.6 memory_read 保持全文行为', async () => {
 test('10.7 插件模块可被 legacy loader 加载且仅 default 导出', async () => {
   const mod = await import('../src/plugin');
   expect(Object.keys(mod)).toEqual(['default']);
-  expect(typeof mod.default).toBe('function');
-  const h = await (mod.default as typeof plugin)({ client: undefined } as any, {
+  expect(typeof (mod.default as any).server).toBe('function');
+  const h = await (mod.default as any).server({ client: undefined } as any, {
     dbPath: join(dir, 'legacy.db'),
     autoUpdate: false,
   });
@@ -113,7 +113,7 @@ test('10.7 插件模块可被 legacy loader 加载且仅 default 导出', async 
 });
 
 test('P0-1 命中但全被预算省略时不报「无匹配」', async () => {
-  const h = await plugin(
+  const h = await plugin.server(
     { client: undefined },
     { dbPath: join(dir, 'omitted.db'), autoUpdate: false, recall: { maxOverflowItems: 0 } },
   );
@@ -146,7 +146,7 @@ test('recall 配置：文件配置生效且 Tuple Options 按字段覆盖', asyn
   const previous = process.env.XDG_CONFIG_HOME;
   process.env.XDG_CONFIG_HOME = xdg;
   try {
-    const fromFile = await plugin({ client: undefined }, { autoUpdate: false });
+    const fromFile = await plugin.server({ client: undefined }, { autoUpdate: false });
     for (const n of [1, 2, 3])
       await fromFile.tool.memory_store.execute(
         { title: `cfg ${n}`, content: `cfg tok ${n}`, type: 'fact', tags: [] },
@@ -159,7 +159,7 @@ test('recall 配置：文件配置生效且 Tuple Options 按字段覆盖', asyn
     expect(fromFileOutput).toContain('完全省略');
     await fromFile.dispose();
 
-    const overridden = await plugin(
+    const overridden = await plugin.server(
       { client: undefined },
       { autoUpdate: false, recall: { maxOverflowItems: 3 } },
     );

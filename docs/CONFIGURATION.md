@@ -157,7 +157,9 @@ Overflow 中的 `score` 是 FTS5/BM25 当前查询的相对相关度：数值越
 
 支持 `~/.config/opencode/opencode-memory.jsonc` / `.json`（`.jsonc` 优先）。自定义路径必须使用绝对路径。
 
-### Plugin Tuple Options
+### Plugin Options
+
+**v1（1.18.29+）** 使用 `plugin` tuple options：
 
 ```jsonc
 {
@@ -174,6 +176,27 @@ Overflow 中的 `score` 是 FTS5/BM25 当前查询的相对相关度：数值越
         }
       }
     ]
+  ]
+}
+```
+
+**v2（2.x）** 使用 `plugins` 的 `options`：
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "@aifcoding/opencode-memory",
+      "options": {
+        "dbPath": "/absolute/path/memory.db",
+        "pinQuota": 8000,
+        "recall": {
+          "maxCharacters": 3000,
+          "maxOverflowItems": 10,
+          "maxOverflowCharacters": 1500
+        }
+      }
+    }
   ]
 }
 ```

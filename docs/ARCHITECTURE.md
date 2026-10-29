@@ -43,7 +43,7 @@
 
 **Core 已实现**：MemoryManager、MemoryStore 端口、Tokenizer 注入、SQLite/FTS5 存储与检索、显式 pin + 配额、软删去重、CAS 乐观锁、WAL + 写重试、顺序迁移。
 
-**OpenCode Adapter 已实现**：`messages.transform` 末尾注入、12 个工具和 `session.compacted` 摘要归档。
+**OpenCode Adapter 已实现**：同一包用默认导出对象同时提供 v1 `server()` 与 v2 `setup(ctx)`；v1 `experimental.chat.messages.transform` / v2 `session.hook("context")` 末尾注入；16 个工具；v1 `session.compacted` / v2 `session.compaction.ended` 摘要归档。
 
 ## 安全辅助记忆提取
 
@@ -126,7 +126,9 @@ packages/core/
 └── src/sqlite       # SQLite 实现与迁移
 
 packages/opencode/
-└── src/plugin.ts    # OpenCode 配置、工具与事件适配
+├── src/plugin.ts    # 双入口：v1 server() + v2 setup()
+├── src/plugin-v1.ts # v1 实现：工具、消息注入、事件
+└── src/plugin-v2.ts # v2 宿主适配器：tool.transform / session.hook / event.subscribe
 
 packages/mcp/
 ├── src/server.ts    # MCP Server + 声明式工具注册
@@ -142,10 +144,10 @@ packages/mcp/
 
 | 功能 | opencode 机制 |
 |---|---|
-| 每轮注入固定记忆 | `experimental.chat.messages.transform`（仅主模型触发、output.messages 带 agent/sessionID） |
-| 压缩时归档 | `session.compacted` 事件 + `client.session.messages` 读产物 |
-| 主动读写工具 | plugin `tool: { ... }`（zod 定义参数） |
-| 配置 | `opencode.json` → `plugin: [["@aifcoding/opencode-memory", {...}]]` |
+| 每轮注入固定记忆 | v1 `experimental.chat.messages.transform`；v2 `session.hook("context")`（v2 消息为 `role + content[]`，适配器负责转换） |
+| 压缩时归档 | v1 `session.compacted` / v2 `session.compaction.ended` + 会话消息读取 |
+| 主动读写工具 | v1 `tool: { ... }`（Zod）；v2 `ctx.tool.transform`（Zod→JSON Schema，结果 `content[]`） |
+| 配置 | v1 `plugin: [[...]]`；v2 `plugins: [{ package, options }]` |
 
 ## MCP Adapter
 
@@ -406,13 +408,13 @@ query
 
 ## 测试现状
 
-已自动覆盖（`bun test`，36 个测试）：
+已自动覆盖（`bun test`，126 个测试）：
 
 - 存储：CRUD、软删去重、FTS 同步、元数据更新不清 embedding、CAS 冲突、归档幂等
 - 检索：中文召回（2 字词/标识符）、无匹配返空、scope 过滤、排序
 - MemoryManager：默认 scope、输入校验、Pin 状态（含 trust_denied）、摘要归档、contextKey KV
 - 依赖边界：Core 不依赖 opencode、adapter 单向依赖 core
 - 可插件分词器：自定义 tokenizer 的写入/查询一致性
-- opencode adapter：store/recall 往返、软删拒绝、pin 配额、compaction event 提取与幂等归档
+- opencode adapter：v1/v2 双入口加载、store/recall 往返、软删拒绝、pin 配额、v2 compaction.ended 桥接与幂等归档
 
-尚未自动覆盖：并发迁移/写入、overlay 消息结构、真实 OpenCode compaction 端到端、配置错误分支（部分运行时链路曾通过 spike 手动验证）。
+尚未自动覆盖：并发迁移/写入、overlay 消息结构、真实 OpenCode v1/v2 compaction 端到端、配置错误分支（部分运行时链路曾通过 spike 手动验证）。

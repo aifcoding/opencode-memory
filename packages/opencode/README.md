@@ -8,19 +8,36 @@ OpenCode 本地持久记忆插件，基于 [`@aifcoding/memory-core`](https://gi
 
 前置条件：OpenCode 与 Bun。
 
-在 `opencode.json` 或 `opencode.jsonc` 中注册：
+同一份包同时支持 OpenCode v1 和 v2。
+
+v1（1.18.29+）使用 `plugin`：
 
 ```jsonc
 { "plugin": ["@aifcoding/opencode-memory"] }
 ```
 
-可通过 tuple options 配置数据库路径和 Pin 配额：
+v2（2.x）使用 `plugins`：
 
 ```jsonc
+{ "plugins": [{ "package": "@aifcoding/opencode-memory" }] }
+```
+
+v1 通过 tuple options、v2 通过 `options` 配置数据库路径和 Pin 配额：
+
+```jsonc
+// v1
 { "plugin": [["@aifcoding/opencode-memory", {
   "dbPath": "/Users/you/.local/share/opencode/memory/memory.db",
   "pinQuota": 8000
 }]] }
+```
+
+```jsonc
+// v2
+{ "plugins": [{ "package": "@aifcoding/opencode-memory", "options": {
+  "dbPath": "/Users/you/.local/share/opencode/memory/memory.db",
+  "pinQuota": 8000
+} }] }
 ```
 
 `dbPath` 必须是绝对路径；默认路径为
@@ -52,7 +69,7 @@ This package is the first adapter for `@aifcoding/memory-core` and provides:
 | Episodic summaries | Compaction summaries searchable across sessions | `session_summaries` |
 | Session working memory | Persistent per-session key-value context | `session_kv` |
 
-Pinned memories are appended as ephemeral reference context on each turn. Compaction summaries are extracted from `session.compacted` and archived idempotently by message ID. The default database is local SQLite at `$HOME/.local/share/opencode/memory/memory.db`; recalled or pinned content enters the model context and may be sent to a remote provider.
+Pinned memories are appended as ephemeral reference context on each turn (v1 `experimental.chat.messages.transform`, v2 `session.hook("context")`). Compaction summaries are extracted from v1 `session.compacted` / v2 `session.compaction.ended` and archived idempotently by message ID. The default database is local SQLite at `$HOME/.local/share/opencode/memory/memory.db`; recalled or pinned content enters the model context and may be sent to a remote provider.
 
 The `<memory-context>` and `<mem_block>` fences are model-side prompts, not a mechanism-level defense against prompt injection.
 

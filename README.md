@@ -10,6 +10,10 @@
 
 通过**长期知识、情景摘要、会话工作记忆**三层模型，让 AI 在不同生命周期内保存和检索信息。默认实现将数据保存在本地 SQLite 中，中文检索由 `jieba-wasm` 与 SQLite FTS5 提供，无需数据库服务器、向量服务或外部 API。
 
+![记忆插件演示](docs/assets/memory-demo.gif)
+
+*保存 → 新会话召回 → 固定 → 每轮注入（真实工具输出）*
+
 ## 选择使用方式
 
 | 目标 | 使用包 | 状态 |
@@ -43,13 +47,25 @@
 
 ### 使用 OpenCode 适配器
 
-在 OpenCode 配置文件 `opencode.json` 或 `opencode.jsonc` 中加入包名：
+同一份包同时支持 OpenCode v1 和 v2。
+
+**v1（1.18.29+）** 使用 `plugin`：
 
 ```jsonc
 {
   "plugin": ["@aifcoding/opencode-memory"]
 }
 ```
+
+**v2（2.x）** 使用 `plugins`：
+
+```jsonc
+{
+  "plugins": [{ "package": "@aifcoding/opencode-memory" }]
+}
+```
+
+v1 走对象入口的 `server()`，v2 走 `setup(ctx)`；工具、Pin、自动提取和摘要归档在两边都可用。v2 没有 TUI Toast，自动更新提示改写到服务端日志；本地插件路径必须是目录。
 
 OpenCode 启动时会通过 Bun 自动安装并缓存插件。
 
@@ -276,7 +292,7 @@ bun test
 
 | 文档 | 职责 |
 |---|---|
-| OpenCode 工具参数 | [`packages/opencode/src/plugin.ts`](packages/opencode/src/plugin.ts) 的 Zod 定义 |
+| OpenCode 工具参数 | [`packages/opencode/src/plugin-v1.ts`](packages/opencode/src/plugin-v1.ts) 的 Zod 定义 |
 | Core API | [`packages/core/src/index.ts`](packages/core/src/index.ts) |
 | 行为语义 | [`openspec/specs/`](openspec/specs/) |
 | 架构取舍 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
@@ -289,7 +305,7 @@ bun test
 4. 运行 `bun test`
 5. 提交 Pull Request，说明动机、行为变化和验证方式
 
-请保持实现、规格和 README 中的工具参数一致。工具接口以 [`plugin.ts`](packages/opencode/src/plugin.ts) 中的 Zod 定义为准。
+请保持实现、规格和 README 中的工具参数一致。工具接口以 [`plugin-v1.ts`](packages/opencode/src/plugin-v1.ts) 中的 Zod 定义为准。
 
 ## 许可证
 

@@ -77,12 +77,17 @@ Core 根入口 SHALL 不加载 `bun:sqlite`；默认 SQLite 实现 SHALL 通过 
 
 ### Requirement: OpenCode 包向后兼容
 
-`@aifcoding/opencode-memory` SHALL 保留现有包名、12 个工具、配置语义和默认数据库位置。
+`@aifcoding/opencode-memory` SHALL 保留现有包名、16 个工具、配置语义和默认数据库位置；同一包 SHALL 同时支持 OpenCode v1 和 v2。
 
 #### Scenario: 现有用户升级
 
 - **WHEN** 用户使用原有 OpenCode 配置升级
 - **THEN** 插件继续读取原数据库并提供相同工具，无需迁移配置或数据
+
+#### Scenario: v2 用户
+
+- **WHEN** 用户使用 v2 的 `plugins` 配置加载插件
+- **THEN** 插件通过 `setup(ctx)` 注册同一组工具，Pin、capture 和归档语义与 v1 一致
 
 ### Requirement: 候选记忆公共 API
 

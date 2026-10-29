@@ -7,7 +7,7 @@
 
 ### Requirement: 固定记忆每轮注入
 
-Core SHALL 负责固定生命周期、配额和通用参考文本渲染；OpenCode Adapter SHALL 在每次主模型调用时 ephemeral 注入，且不写入消息历史。
+Core SHALL 负责固定生命周期、配额和通用参考文本渲染；OpenCode Adapter SHALL 在每次主模型调用时 ephemeral 注入，且不写入消息历史。v1 使用 `experimental.chat.messages.transform`，v2 使用 `session.hook("context")`；两者都只影响本次模型请求。
 
 #### Scenario: 跨会话持续注入
 - **WHEN** 某记忆已固定，用户在任意新会话对话
