@@ -108,6 +108,19 @@ function toolSchema(args: unknown): z.ZodObject<z.ZodRawShape> {
   return z.object((args && typeof args === 'object' ? args : {}) as z.ZodRawShape);
 }
 
+// Zod 的 .default() 在 toJSONSchema 里仍会进 required；v2 在进入我们的
+// schema.parse 之前就按 JSON Schema 校验，导致“省略带默认值的字段”被拒。
+// 这里把带 default 的字段从 required 移除，默认值仍由 schema.parse 补上。
+function jsonSchema(schema: z.ZodObject<z.ZodRawShape>) {
+  const json = z.toJSONSchema(schema) as any;
+  if (Array.isArray(json?.required) && json.properties && typeof json.properties === 'object') {
+    json.required = json.required.filter(
+      (key: string) => !(json.properties[key] && 'default' in json.properties[key]),
+    );
+  }
+  return json;
+}
+
 export async function v2Setup(ctx: V2Context) {
   const messageCache = new Map<string, any[]>();
   const input = { client: createV2Client(ctx, messageCache) } as unknown as PluginInput;
@@ -120,7 +133,7 @@ export async function v2Setup(ctx: V2Context) {
       editor.add({
         name,
         description: tool.description,
-        input: z.toJSONSchema(schema),
+        input: jsonSchema(schema),
         async execute(args: any, context: any) {
           const parsed = schema.parse(args ?? {});
           const result = await tool.execute(parsed, {
