@@ -140,3 +140,92 @@ test('v2 adapter keeps v1 defaults for pinMode and store args', async () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('v2 adapter removes all defaulted fields from required', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'opencode-memory-v2-schema-'));
+  const tools: Record<string, any> = {};
+  const ctx: any = {
+    options: { dbPath: join(dir, 'test.db'), autoUpdate: false },
+    tool: {
+      async transform(fn: (editor: any) => void) {
+        fn({ add(tool: any) { tools[tool.name] = tool; } });
+      },
+    },
+    session: {
+      async hook() {},
+      async context() { return []; },
+      async create() { return { id: 'child' }; },
+      async switchAgent() {},
+      async generate() { return { text: '[]' }; },
+      async remove() {},
+    },
+    event: { async *subscribe() {} },
+  };
+  const cleanup = await v2Setup(ctx);
+  try {
+    const defaulted: Record<string, string[]> = {
+      memory_pin: ['pinMode'],
+      memory_store: ['type', 'tags'],
+      memory_candidates: ['limit'],
+      memory_ls: ['limit'],
+    };
+    for (const [name, keys] of Object.entries(defaulted)) {
+      expect(tools[name]).toBeDefined();
+      for (const key of keys) expect(tools[name].input.required ?? []).not.toContain(key);
+    }
+    expect(tools.memory_recall.input.required).toContain('query');
+    expect(tools.memory_recall.input.required).not.toContain('maxCharacters');
+    expect(tools.memory_pins.input.required ?? []).toEqual([]);
+    expect(tools.memory_capture.input.required ?? []).toEqual([]);
+  } finally {
+    await cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('v2 adapter exposes all tools with v1 behavior', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'opencode-memory-v2-smoke-'));
+  const tools: Record<string, any> = {};
+  const ctx: any = {
+    options: { dbPath: join(dir, 'test.db'), autoUpdate: false },
+    tool: {
+      async transform(fn: (editor: any) => void) {
+        fn({ add(tool: any) { tools[tool.name] = tool; } });
+      },
+    },
+    session: {
+      async hook() {},
+      async context() { return []; },
+      async create() { return { id: 'child' }; },
+      async switchAgent() {},
+      async generate() { return { text: '[]' }; },
+      async remove() {},
+    },
+    event: { async *subscribe() {} },
+  };
+  const cleanup = await v2Setup(ctx);
+  try {
+    const context = { sessionID: 's1' };
+    const text = (r: any) => r.content[0].text as string;
+    const stored = await tools.memory_store.execute(
+      { title: '工具冒烟', content: '覆盖 store/recall/ls/read/forget/kv/summaries/candidates/capture', type: 'fact', tags: [] },
+      context,
+    );
+    const id = Number(text(stored).match(/id=(\d+)/)?.[1]);
+    expect(text(await tools.memory_recall.execute({ query: '工具冒烟' }, context))).toContain('工具冒烟');
+    expect(text(await tools.memory_ls.execute({ limit: 5 }, context))).toContain('工具冒烟');
+    expect(text(await tools.memory_read.execute({ id }, context))).toContain('工具冒烟');
+    expect(text(await tools.memory_pins.execute({}, context))).toContain('无固定记忆');
+    expect(text(await tools.kv_set.execute({ key: 'k', value: 'v' }, context))).toContain('已存');
+    expect(text(await tools.kv_get.execute({ key: 'k' }, context))).toBe('v');
+    expect(text(await tools.kv_list.execute({}, context))).toContain('k');
+    expect(text(await tools.kv_del.execute({ key: 'k' }, context))).toContain('已删');
+    expect(text(await tools.memory_candidates.execute({ limit: 5 }, context))).toContain('无候选记忆');
+    expect(text(await tools.memory_capture.execute({}, context))).toContain('未启用');
+    expect(text(await tools.recall_summaries.execute({ query: '不存在' }, context))).toContain('无匹配摘要');
+    expect(text(await tools.memory_forget.execute({ id }, context))).toContain('已删除');
+  } finally {
+    await cleanup();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
