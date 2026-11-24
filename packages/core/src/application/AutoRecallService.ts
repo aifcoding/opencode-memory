@@ -39,6 +39,11 @@ function wordHit(haystack: string, word: string): boolean {
   return haystack.includes(word);
 }
 
+function broadAutoTitle(title: string): boolean {
+  if (/[.:/=]/.test(title)) return false;
+  return title.trim().split(/\s+/).length < 2;
+}
+
 function covers(item: AutoRecallItem, words: string[]): boolean {
   const usable = words.filter((word) => !GENERIC.has(word));
   if (usable.length === 0) return false;
@@ -78,6 +83,14 @@ export class AutoRecallService {
         const id = entry.memory.id;
         if (seen.has(id)) continue;
         seen.add(id);
+        // 自动采集的宽泛标题（如 push / redis / test）会命中大量无关提问，不主动注入。
+        const tags = Array.isArray((entry.memory as { tags?: string[] }).tags)
+          ? ((entry.memory as { tags?: string[] }).tags as string[])
+          : [];
+        if (tags.includes('auto') && broadAutoTitle(entry.memory.title)) {
+          result.skipped.push(`auto title too broad: ${id}`);
+          continue;
+        }
         const item: AutoRecallItem = {
           id,
           title: entry.memory.title,

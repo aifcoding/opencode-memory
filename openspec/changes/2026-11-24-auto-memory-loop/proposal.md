@@ -10,7 +10,7 @@ v2 宿主已有每个模型 step 触发的 `session.hook("context")`，且注入
 
 ## What Changes
 
-- 新增 `AutoCaptureService`：按信号识别值得记的内容，写入现有 `memories`（`origin=agent`、`trust=low`），同 title 归一化命中时以 CAS 更新，不新增表。
+- 新增 `AutoCaptureService`：按准入矩阵逐单元路由。E1/S1/D1 直写现有 `memories`（`origin=agent`、`trust=low`）；E2/S2/D2/C2 写入现有 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时以 CAS 更新；Q/N 丢弃。不新增表。
 - 新增 `AutoRecallService`：按 `scope → tags 精确 → FTS` 检索，经准入与预算后返回摘要级候选。
 - 新增 v2 编排层：在 `session.hook("context")` 内分区执行采集与召回，注入不超过预算的独立参考块；任何失败不影响 Pin 与主请求。
 - 用 `session_kv` 保存已处理 `messageID` 游标，避免每 step 重复处理。

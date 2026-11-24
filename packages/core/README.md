@@ -39,7 +39,7 @@ const manager = createSqliteMemoryManager({ dbPath: '/tmp/memory.db' });
 
 Core 提供两个可复用服务，但**不会自行触发**：
 
-- `AutoCaptureService`：按 5 类信号（显式/纠正/问答对/结构化值/决策）生成候选，写入时固定 `origin=agent`、`trust=low`；同 title 或"纠正"走 CAS 覆盖，且只覆盖 `origin=agent && trust=low` 的条目；命中现有凭据规则时整条拒绝，不保证完整识别。
+- `AutoCaptureService`：按准入矩阵逐单元路由（规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）。E1/S1/D1 直接以 `origin=agent`、`trust=low` 写入正式记忆；E2/S2/D2/C2 经 `beginCapture/completeCapture` 写入待审批候选；C1 仅在唯一匹配 `agent/low` 且旧值相符时走 CAS 更新；Q（纯问答对）与 N 丢弃。命中现有凭据规则时整条拒绝，不保证完整识别。
 - `AutoRecallService`：对调用方提供的 scope 列表逐一执行 FTS，合并去重后进行标题关键词准入与条目预算筛选；当前没有独立 tags 检索通道。
 
 调度、注入位置、缓存与开关都在 OpenCode v2 适配层（`packages/opencode/src/context/auto-memory.ts`）。
@@ -129,7 +129,7 @@ Pin results include `pinned`, `quota_exceeded`, `summary_required`, `trust_denie
 
 Core exposes two reusable services but never triggers them itself:
 
-- `AutoCaptureService`: turns five signal kinds (explicit, correction, Q&A, structured values, decisions) into candidates; writes with `origin=agent` and `trust=low`; updates by title or correction via CAS and only overwrites auto-written low-trust entries; rejects input matching the implemented credential rules only (not a complete guarantee).
+- `AutoCaptureService`: routes each text unit through the admission matrix (rule ids in `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`). E1/S1/D1 write directly to `memories` with `origin=agent` and `trust=low`; E2/S2/D2/C2 go through `beginCapture/completeCapture` as pending candidates; C1 updates via CAS only when exactly one `agent/low` entry matches and the old value is confirmed; Q (Q&A-only replies) and N are dropped. Input matching the implemented credential rules is rejected (not a complete guarantee).
 - `AutoRecallService`: runs FTS for each caller-provided scope, merges and deduplicates results, then applies title-keyword admission and item budgeting. There is currently no separate tag-retrieval channel.
 
 Scheduling, injection position, caching, and switches live in the OpenCode v2 adapter (`packages/opencode/src/context/auto-memory.ts`).

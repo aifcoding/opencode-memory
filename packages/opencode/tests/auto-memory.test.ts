@@ -93,7 +93,7 @@ test('auto mode injects recalled memory on reference request', async () => {
     config,
     scope,
     sessionID: 'ses_a',
-    messages: [{ role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] }],
+    messages: [{ role: 'user', content: [{ type: 'text', text: '记住：test.port=18096' }] }],
   });
 
   const autoConfig = {
@@ -106,7 +106,7 @@ test('auto mode injects recalled memory on reference request', async () => {
     scope,
     sessionID: 'ses_b',
     messages: [
-      { role: 'user', content: [{ type: 'text', text: '上次那个 test db 是什么' }] },
+      { role: 'user', content: [{ type: 'text', text: '上次那个 test.port 是多少' }] },
     ],
   });
 
@@ -170,7 +170,7 @@ function withOverrides(overrides: Record<string, (...args: any[]) => any>): Test
 
 test('same-turn update is not echoed but other related memories still recall', async () => {
   const messages = [
-    { role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] },
+    { role: 'user', content: [{ type: 'text', text: '记住：test.port=18096' }] },
   ];
   const captureOnly = {
     ...config,
@@ -187,19 +187,19 @@ test('same-turn update is not echoed but other related memories still recall', a
 
   const [updated] = await manager.listMemories({ scope });
   const other = await manager.storeMemory({
-    title: 'test db 备用连接',
-    content: 'test db 备用连接 10.0.0.9:3306',
-    summary: 'test db 备用连接 10.0.0.9:3306',
+    title: 'test.port 备用连接',
+    content: 'test.port 备用连接指向 127.0.0.1:18099',
+    summary: 'test.port 备用连接指向 127.0.0.1:18099',
     scope,
     origin: 'user',
     trust: 'high',
   });
 
-  // 与预置轮不同、但结构化值/实体名相同 → 生成同一 title，走 CAS 更新而非 unchanged 跳过。
+  // 明确纠正（字段 + 合法新值 + 唯一目标）→ 走 C1 更新，而不是新增或按标题覆盖。
   const updateMessages = [
     {
       role: 'user',
-      content: [{ type: 'text', text: '记住 test db 还在 10.0.0.5:3306，已确认' }],
+      content: [{ type: 'text', text: 'test.port 改成 18097' }],
     },
   ];
   const autoConfig = { ...config, recall: { ...config.recall, mode: 'auto' as const } };
@@ -460,7 +460,7 @@ test('hint mode neither stores nor queries memory', async () => {
 
 test('capture and recall switches are independent', async () => {
   const messages = [
-    { role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] },
+    { role: 'user', content: [{ type: 'text', text: '记住：test.port=18096' }] },
   ];
   const bothOff = {
     capture: { ...config.capture, enabled: false },

@@ -57,7 +57,7 @@ Recall 分层召回配置（可选，走默认值即可）：
 
 `memory_recall` 默认只返回标题+摘要（无摘要时回退正文前 200 字符），预算外候选以轻量 Ref 列表返回，全文用 `memory_read` 获取。
 
-自动记忆（仅 v2；已发布到 npm `next`：`2.3.0-rc.3`，依赖 `@aifcoding/memory-core@0.4.1`；`latest` 仍为 `2.2.2`）：
+自动记忆（仅 v2；本地源码 `2.4.0-rc.1` 未发布，依赖 `@aifcoding/memory-core@0.5.0`；npm `next` 仍是旧采集行为的 `2.3.0-rc.2`，`latest` 为 `2.2.2`）：
 
 ```jsonc
 { "plugins": [{ "package": "@aifcoding/opencode-memory", "options": {
@@ -70,9 +70,11 @@ Recall 分层召回配置（可选，走默认值即可）：
 } }] }
 ```
 
-- `autoCapture`：按信号自动写入低信任记忆（`origin=agent`、`trust=low`）；`shadow` 生成候选但不写入，仍推进会话游标，无决策记录。
+- `autoCapture`：按准入矩阵逐单元判定。E1 明确保存、S1 完整配置绑定、D1 明确选型直接写入低信任记忆（`origin=agent`、`trust=low`）；E2/S2/D2/C2 只写入 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时更新；纯问答对（Q）与无有效单元（N）丢弃。`shadow` 只计算不写任何表，仍推进会话游标。
+- 未审批候选不在 `memories` 表，召回与 `memory_recall` 都不会返回。
 - `autoRecall`：`auto` 检索并注入摘要（统一 `global/default`、FTS + 标题准入、预算含围栏），`hint` 只注入固定检索提示，`shadow` 不检索不注入。
-- 自动写入不会覆盖人工记忆；凭据过滤只拒绝命中现有规则的输入，不是完整安全保证。
+- 限流：单条消息最多 3 条（直写 + 候选合计），同一 scope 每日最多 20 条新增待审候选；14 天过期未实现。
+- 自动写入不会覆盖人工或高信任记忆；凭据过滤只拒绝命中现有规则的输入，不是完整安全保证。
 
 更多功能、配置和工具说明见仓库根目录的 [`README.md`](https://github.com/aifcoding/opencode-memory/blob/main/README.md) 和 [`docs/CONFIGURATION.md`](https://github.com/aifcoding/opencode-memory/blob/main/docs/CONFIGURATION.md)。
 

@@ -99,7 +99,10 @@ export interface AutoMemoryInput {
 
 export interface AutoMemoryResult {
   inject?: string;
+  /** 写入或更新的正式记忆数。 */
   captured: number;
+  /** 新写入的待审批候选数。 */
+  proposed: number;
   recalled: number;
 }
 
@@ -143,7 +146,7 @@ export function resetAutoMemoryCache(): void {
  * 调用方必须自行 try/catch：本函数抛错会打断宿主请求。
  */
 export async function runAutoMemory(input: AutoMemoryInput): Promise<AutoMemoryResult> {
-  const result: AutoMemoryResult = { captured: 0, recalled: 0 };
+  const result: AutoMemoryResult = { captured: 0, proposed: 0, recalled: 0 };
   if (input.skipSessionIDs?.has(input.sessionID)) return result;
 
   // 子会话的 user 消息是 agent 指令，不是用户输入；采集/召回都会造成自我污染。
@@ -174,6 +177,7 @@ export async function runAutoMemory(input: AutoMemoryInput): Promise<AutoMemoryR
           scope: input.scope,
         });
         result.captured = outcome.written + outcome.updated;
+        result.proposed = outcome.pendingCreated;
         createdIds = outcome.createdIds;
         await input.manager.setContextValue({
           contextKey: input.sessionID,

@@ -2,27 +2,56 @@
 
 ### Requirement: 自动采集（v2）
 
-系统 SHALL 在 v2 会话中按信号自动识别值得长期保存的信息，并写入现有 `memories`；SHALL NOT 新增表、列或结构化事实模型。
+系统 SHALL 把最后一条真实用户消息按准入矩阵逐单元路由（规则编号与判据见 `admission-rules.md`），不把整段信号继承到每句。满足完整绑定条件的单元写入正式记忆；有信息量但无法安全直写的单元写入待审批候选；其余丢弃。
 
-#### Scenario: 显式指示
+#### Scenario: 明确保存直写
 
-- **WHEN** 用户消息包含「记住」「以后都用」「配置是」等显式指示，且内容不含凭据
-- **THEN** 系统写入一条 `origin=agent`、`trust=low` 的记忆，正文包含结论、依据、状态与时间
+- **WHEN** 单元以「记住/记一下/保存下来」开头，正文非空、≤400 字、不是问句且不含凭据
+- **THEN** 系统直写一条 `origin=agent`、`trust=low` 的记忆，tags 含 `auto:explicit` 与 `auto:rule:E1`
 
-#### Scenario: 纠正覆盖
+#### Scenario: 完整配置绑定直写
 
-- **WHEN** 用户消息包含纠正信号（「不是…是…」「改成」「应该是」）且归一化 title 命中已有记忆
-- **THEN** 系统以 CAS 更新该记忆的 `content` 与 `summary`，不新增重复条目
+- **WHEN** 单元形如 `实体.字段=值` 或 `实体的字段是值`，实体为明确标识符，字段属白名单（地址/端口/版本/路径）且值通过类型校验
+- **THEN** 系统直写该绑定；同一键已有不同值时 SHALL 只写入候选，不覆盖原记录
 
-#### Scenario: 信号不足不写
+#### Scenario: 明确选型直写
 
-- **WHEN** 消息仅含泛词、礼貌回复、无来源推测，或环境/对象无法确定
-- **THEN** 系统不写入任何记忆
+- **WHEN** 单元形如「本项目决定采用 X」，X 为单个标识符且无额外分句
+- **THEN** 系统直写 `type=decision` 的记忆
 
-#### Scenario: 单轮上限
+#### Scenario: 有信息量但无法安全直写
 
-- **WHEN** 同一轮命中超过 `maxWritesPerTurn` 条候选
-- **THEN** 系统按信号优先级保留高优先级条目，其余丢弃并记录计数
+- **WHEN** 单元命中 E2 弱 explicit、S2 不完整结构化事实、D2 其他决策或 C2 无法定位目标的纠正
+- **THEN** 系统写入 `memory_candidates`（`status=pending`），SHALL NOT 写入 `memories`
+
+#### Scenario: 纠正更新
+
+- **WHEN** 纠正单元给出实体、字段与新值，且唯一匹配一条 `agent/low` 记忆、旧值（若给出）与该记忆正文相符
+- **THEN** 系统以 CAS 更新该条；零匹配、多匹配或旧值不符时 SHALL 只写入候选，不覆盖任何记录
+
+#### Scenario: 问答对与无有效单元
+
+- **WHEN** 单元只能靠「上一轮助手问过 + 本轮短回复」判断（如「深蓝色」「推」），或未命中任何规则
+- **THEN** 系统既不写入正式记忆，也不写入候选
+
+#### Scenario: 单条消息上限
+
+- **WHEN** 单条消息命中超过 3 条（直写 + 候选合计）
+- **THEN** 系统只保留前 3 条，其余丢弃并记录到 `skipped`
+
+### Requirement: 候选隔离
+
+未审批候选 SHALL 不进入 `memories`，因此默认召回与 `memory_recall` 均不返回；候选审批沿用现有审核流程。
+
+#### Scenario: 候选审批前
+
+- **WHEN** 自动采集只产生了候选
+- **THEN** `memories` 行数与召回结果均不变
+
+#### Scenario: 审批后
+
+- **WHEN** 审核通过某条自动候选
+- **THEN** 生成正式记忆并可按原有召回规则检索，候选状态变为 `approved`
 
 ### Requirement: 凭据不落库
 

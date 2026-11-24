@@ -115,6 +115,30 @@ const migrations: Migration[] = [
       db.run(`CREATE INDEX idx_candidate_scope ON memory_candidates(scope, scope_key, status)`);
     },
   },
+  {
+    version: 4,
+    up: (db) => {
+      // 自动采集需要一个独立的 trigger 取值；SQLite 不能改 CHECK，只能重建表。
+      db.run(`ALTER TABLE memory_capture_runs RENAME TO memory_capture_runs_v3`);
+      db.run(`
+        CREATE TABLE memory_capture_runs (
+          capture_key TEXT PRIMARY KEY, context_key TEXT NOT NULL, source_id TEXT NOT NULL,
+          scope TEXT NOT NULL DEFAULT 'global', scope_key TEXT NOT NULL DEFAULT 'default',
+          trigger TEXT NOT NULL, extractor_version TEXT NOT NULL, status TEXT NOT NULL,
+          lease_token TEXT, lease_expires_at INTEGER, candidate_count INTEGER NOT NULL DEFAULT 0,
+          filtered_count INTEGER NOT NULL DEFAULT 0, error_code TEXT, created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL, completed_at INTEGER,
+          CHECK(scope IN ('global','user','project','session')),
+          CHECK(trigger IN ('compaction','manual','auto')),
+          CHECK(status IN ('running','completed','failed')),
+          CHECK(candidate_count >= 0), CHECK(filtered_count >= 0)
+        )
+      `);
+      db.run(`INSERT INTO memory_capture_runs SELECT * FROM memory_capture_runs_v3`);
+      db.run(`DROP TABLE memory_capture_runs_v3`);
+      db.run(`CREATE INDEX idx_capture_context ON memory_capture_runs(context_key, created_at)`);
+    },
+  },
 ];
 
 export function migrate(db: Database): void {

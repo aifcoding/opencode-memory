@@ -40,7 +40,7 @@
 | D13 | 召回语义 | 无匹配返回空；结果带 id+score | 已实现 |
 | D14 | 多源检索缝 | 只读 `MemorySource[]` fan-out | 规划中 |
 | D15 | 身份键 | project 用 `realpath`/安装 UUID | 规划中 |
-| D16 | 自动写入（v2） | 复用 `memories`；`origin=agent`/`trust=low`；同 title 或纠正时 CAS 覆盖；不覆盖人工记忆 | 已实现 |
+| D16 | 自动写入（v2） | 按准入矩阵路由：E1/S1/D1 直写 `memories`（`origin=agent`/`trust=low`）；E2/S2/D2/C2 写 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时 CAS 更新；不覆盖人工或高信任记忆 | 已实现（本地源码未发布） |
 | D17 | 自动召回（v2） | 默认 `auto`；服务支持多 scope，当前适配器使用 `global/default`；FTS + 标题准入 + 预算；注入消息末尾、不落库；缓存按依赖指纹失效 | 部分（无 embedding，阈值未标定） |
 
 **Core 已实现**：MemoryManager、MemoryStore 端口、Tokenizer 注入、SQLite/FTS5 存储与检索、显式 pin + 配额、软删去重、CAS 乐观锁、WAL + 写重试、顺序迁移。
@@ -398,13 +398,13 @@ query
 当前面向单用户本地环境。已实现的安全性质：
 
 1. **参考块标记**：记忆以 reference 块注入，并提示模型视为参考数据；该标记是模型侧提示，不构成对提示注入的机制防护
-2. **注入边界**：v2 默认可自动注入非固定记忆（包括 `trust=low` 的自动采集条目）；参考块标记是模型侧提示，不构成机制隔离
+2. **注入边界**：v2 默认可自动注入非固定记忆（包括 `trust=low` 的自动采集条目）；未审批候选不在 `memories` 表，不参与召回；参考块标记是模型侧提示，不构成机制隔离
 3. **无动态 SQL**：过滤用结构化参数，LLM 不接触 SQL 文本
 4. **软删与去重**：删除为软删（不参与检索），`(scope, scope_key, content_hash)` 去重
 
 边界与限制（下列含已实现的现状说明与未实现项；勿据此做超出事实的安全承诺）：
 
-- 信任策略按入口区分：手动 `memory_store` 为 `origin=user`/`trust=high`；自动采集为 `origin=agent`/`trust=low`，直接写入正式表、不经过候选审批；`capture` 候选需审批；低信任内容固定时返回 `trust_denied`；未做多来源分级与升级审批
+- 信任策略按入口区分：手动 `memory_store` 为 `origin=user`/`trust=high`；自动采集直写部分为 `origin=agent`/`trust=low`，其余信号只写入待审批候选（复用候选表与审核流程）；`capture` 候选同样需审批；低信任内容固定时返回 `trust_denied`；未做多来源分级与升级审批
 - 部分入口（`capture`、`autoCapture`）有规则式凭据扫描，非全局完整检测；未做统一日志脱敏
 - 召回/固定的内容会进入模型上下文；若使用远程模型提供商，内容可能随请求发送给该提供商
 

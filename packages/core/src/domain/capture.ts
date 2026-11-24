@@ -1,6 +1,6 @@
 import type { MemoryEntry, MemoryType, ScopeRef } from './types.js';
 
-export type CaptureTrigger = 'compaction' | 'manual';
+export type CaptureTrigger = 'compaction' | 'manual' | 'auto';
 export type SuggestedDomain = 'code' | 'user' | 'business' | 'uncertain';
 export type CandidateStatus = 'pending' | 'approved' | 'rejected';
 export type CandidateRiskCode =

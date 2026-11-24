@@ -15,7 +15,8 @@ test('P1-3 零迁移：db_migrations 最大版本不变且无新增表/索引', 
     const version = db.query('SELECT MAX(version) AS v FROM db_migrations').get() as {
       v: number;
     };
-    expect(version.v).toBe(3);
+    // v4 重建 memory_capture_runs 以允许 trigger='auto'；表与索引集合不变。
+    expect(version.v).toBe(4);
 
     const tables = (
       db.query(`SELECT name FROM sqlite_master WHERE type='table'`).all() as { name: string }[]

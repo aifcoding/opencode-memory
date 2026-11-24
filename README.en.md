@@ -219,15 +219,20 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 
 ### Automatic memory (v2)
 
-> These features are available as the pre-release `@aifcoding/opencode-memory@2.3.0-rc.3` (npm `next` tag, requires `@aifcoding/memory-core@0.4.1`); `latest` is still `2.2.2`, which does not include them.
+> The local source is `@aifcoding/opencode-memory@2.4.0-rc.1` (unpublished, requires `@aifcoding/memory-core@0.5.0`); on npm, `next` is still `2.3.0-rc.2` (old capture behaviour) and `latest` is `2.2.2`. This section describes the local source.
 
 On every model request, v2 runs one automatic memory pass:
 
-1. **Capture**: extracts only from the last message recognized as genuine user input. Assistant text only assists Q&A detection; final assistant replies are not archived. Detects five signal kinds (explicit, correction, Q&A, structured values, decisions/negations) and writes `memories` with `origin=agent` and `trust=low`.
-2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result.
+1. **Capture**: extracts only from the last message recognized as genuine user input; final assistant replies are not archived. Each text unit is routed by an admission matrix, and signals are not inherited across sentences:
+   - **Written directly** to `memories` (`origin=agent`, `trust=low`): E1 explicit save (`记住：…`), S1 complete configuration binding (`entity.field=value`, with only endpoint/port/version/path fields and type-checked values), D1 explicit selection (`本项目决定采用 X`).
+   - **Queued as pending candidates** in `memory_candidates`: E2 weak explicit wording, S2 incomplete structured facts, D2 other decisions, C2 corrections that cannot be safely targeted.
+   - **Updating an existing memory**: only C1 (a whitelisted field plus a type-valid new value, exactly one matching `agent/low` entry, old value matches, CAS revision matches). Nothing else overwrites by title; conflicting content becomes a candidate.
+   - **Never inspected**: content inside fenced code blocks or quote blocks. Auto-captured entries whose title is a single broad word are also not injected by auto recall.
+   - **Dropped**: Q Q&A-only replies (short answers such as `深蓝色` or `推`) and N units with no applicable rule.
+2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result. Pending candidates never enter `memories`, so neither recall nor `memory_recall` returns them.
 3. **Isolation**: the automatic-memory call has an outer error handler; capture and recall are separately wrapped, but the Pin transform sits outside it. Injected content is not persisted.
 
-Limitations: the cursor deduplicates by user-text hash, so later identical input may be skipped; at most the first 3 sentence segments are considered; a correction without a title match overwrites the latest agent/low memory and may target a different entity; rules primarily target Chinese and are not quality-calibrated; user-authored memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this.
+Limitations: at most 3 entries per message (direct writes plus candidates); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; Q&A pairs are no longer persisted at all; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
 
 ### Session compaction archiving
 

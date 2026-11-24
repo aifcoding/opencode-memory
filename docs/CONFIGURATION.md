@@ -54,24 +54,28 @@ $HOME/.config/opencode
 
 #### 自动记忆（v2）
 
-> 仅本地源码实现，尚未发布：npm `@aifcoding/opencode-memory@2.2.2` 不包含这些配置。
+> 本地源码为 `2.4.0-rc.1`（未发布，依赖 `memory-core@0.5.0`）；npm `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 为 `2.2.2`。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
-| `autoCapture.enabled` | `boolean` | `true` | 是否把高置信信号自动写入正式记忆 |
-| `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` 生成候选但不写入；仍推进会话游标，无决策记录 |
-| `autoCapture.maxWritesPerTurn` | `number` | `3` | 单轮最多写入条数（0..10） |
+| `autoCapture.enabled` | `boolean` | `true` | 是否启用自动采集（按准入矩阵写入或落候选） |
+| `autoCapture.mode` | `'off' \| 'shadow' \| 'on'` | `'on'` | `on` 按矩阵直写 + 落候选；`shadow` 只计算不写任何表，仍推进会话游标；`off` 等价于 `enabled=false` |
+| `autoCapture.maxWritesPerTurn` | `number` | `3` | 单条消息最多写入条数，直写与候选合计（0..10，超大值按 3 截断） |
 | `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` 检索并注入摘要；`hint` 只注入固定检索提示；`shadow` 不检索不注入，无决策记录 |
 | `autoRecall.maxItems` | `number` | `3` | 单次最多注入条数（1..10） |
 | `autoRecall.maxCharacters` | `number` | `300` | 注入块字符上限（50..1200，含围栏与说明）；仅 `auto` 模式，`hint` 固定提示约 143 字符不受此限制 |
 
 行为与限制：
 
-- 自动写入使用 `origin=agent`、`trust=low`；只覆盖同为自动写入且低信任的条目，人工记忆永不被改写。
+- 准入矩阵（v1，规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）：E1 明确保存、S1 完整配置绑定、D1 明确选型 → 直写 `memories`（`origin=agent`、`trust=low`）；E2/S2/D2/C2 → 写 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时 CAS 更新；Q（纯问答对）与 N 丢弃。
+- 未审批候选不在 `memories` 表，默认召回与 `memory_recall` 都不会返回；审批沿用现有候选审核流程。
+- 直写与更新都不会改写人工记忆或高信任记忆；非 C1 路径一律不得按标题覆盖，同键或同标题出现不同内容时只落候选（值比较按边界匹配，`1808` 不命中 `18080`）。
+- 代码围栏与引用块内容不参与判定；C1 需给出白名单字段与合法新值；自动条目标题为单个宽泛词时不参与自动召回注入。
+- 限流：单条消息最多 3 条（直写 + 候选）；同一 scope 每日最多 20 条新增待审候选；14 天候选过期尚未实现。
 - 凭据过滤只拒绝命中现有规则的输入（密码、token、私钥、含 userinfo 的连接串），不保证识别所有敏感信息；不要输入或保存凭据。
 - 自动召回统一使用 `global/default`，无项目隔离、无独立 tags 检索通道；准入按标题关键词、英文词边界与泛词过滤。
 - 自动召回块位于 Pin 块之后；注入不落库，每个模型 step 都会重新提供；预算包含围栏、说明与换行。
-- 采集只取最后一条真实用户消息，助手文本仅辅助问答判断；游标按文本 hash 去重，相同文本后续输入可能跳过；每次最多前 3 个句段；纠正无同标题匹配时覆盖最近一条 agent/low 记忆，不保证同一实体。
+- 采集只取最后一条真实用户消息，不归档助手最终回复；游标按文本 hash 去重，相同文本后续输入会跳过；问答对不再产生任何持久化。
 - 规则主要面向中文，质量阈值未标定；`v1` 不启用自动记忆。
 - 配置非法（未知字段、越界值、非法枚举，例如 `autoCapture.mode: "active"`）时插件显式报错并拒绝加载，不静默回退到默认值；日志为 `failed to load plugin … invalid config: <字段>: <原因>`，此时记忆工具与自动记忆都不可用，需修正配置后重载。
 

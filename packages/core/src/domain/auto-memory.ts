@@ -6,9 +6,13 @@ export type AutoCaptureMode = (typeof AUTO_CAPTURE_MODES)[number];
 export const AUTO_RECALL_MODES = ['off', 'hint', 'shadow', 'auto'] as const;
 export type AutoRecallMode = (typeof AUTO_RECALL_MODES)[number];
 
-/** 采集信号；顺序即优先级。 */
+/** 采集信号；顺序即优先级。qa 仅保留枚举，不再产生持久化。 */
 export const AUTO_SIGNALS = ['explicit', 'correction', 'qa', 'structured', 'decision'] as const;
 export type AutoSignal = (typeof AUTO_SIGNALS)[number];
+
+/** 准入规则编号（见 openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md）。 */
+export const AUTO_RULES = ['E1', 'E2', 'S1', 'S2', 'D1', 'D2', 'C1', 'C2', 'Q', 'N'] as const;
+export type AutoRule = (typeof AUTO_RULES)[number];
 
 export interface AutoCaptureConfig {
   enabled: boolean;
@@ -30,6 +34,7 @@ export interface AutoCandidate {
   tags: string[];
   signal: AutoSignal;
   entityTag: string;
+  rule: AutoRule;
 }
 
 export interface AutoCaptureInput {
@@ -39,11 +44,28 @@ export interface AutoCaptureInput {
   now?: number;
 }
 
+/** 单个文本单元的准入结果。 */
+export interface AutoRoutedUnit {
+  rule: AutoRule;
+  text: string;
+  candidate?: AutoCandidate;
+  /** C1 的目标记录 id。 */
+  targetId?: number;
+  /** C1 中被纠正的旧值，用于核对目标正文。 */
+  oldValue?: string;
+  reason?: string;
+}
+
 export interface AutoCaptureResult {
-  signals: AutoSignal[];
-  candidates: AutoCandidate[];
+  /** 各规则命中次数，便于按规则统计。 */
+  rules: Partial<Record<AutoRule, number>>;
+  direct: AutoRoutedUnit[];
+  pending: AutoRoutedUnit[];
+  dropped: AutoRoutedUnit[];
   written: number;
   updated: number;
+  /** 本轮新写入的待审批候选数。 */
+  pendingCreated: number;
   /** 本轮写入或更新的记忆 id，用于排除同轮召回回显。 */
   createdIds: number[];
   skipped: string[];
