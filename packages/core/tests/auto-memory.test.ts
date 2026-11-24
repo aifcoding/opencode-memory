@@ -578,3 +578,27 @@ test('re-capturing identical text is idempotent and keeps the revision', async (
   expect(list).toHaveLength(1);
   expect(snapshotOf(list[0]!)).toEqual(before);
 });
+
+test('qa signal skips instructions, questions and casual replies', () => {
+  const question = 'md 里要写哪些内容？';
+  const cases = [
+    'md不要写我的名字，就照功能分工描述就行',
+    'md格式不对啊',
+    '跟我们这几个改动相关的接口都列上吧，不然他们怎么知道哪个需求用哪个接口？',
+    '好的',
+  ];
+  for (const text of cases) {
+    const candidates = extractCandidates({ text, previousAssistantText: question, scope });
+    expect(candidates).toHaveLength(0);
+  }
+});
+
+test('qa signal still keeps a short factual answer', () => {
+  const candidates = extractCandidates({
+    text: '深蓝色',
+    previousAssistantText: '主题颜色是什么？',
+    scope,
+  });
+  expect(candidates).toHaveLength(1);
+  expect(candidates[0]?.signal).toBe('qa');
+});

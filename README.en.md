@@ -219,7 +219,7 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 
 ### Automatic memory (v2)
 
-> These features are available as the pre-release `@aifcoding/opencode-memory@2.3.0-rc.2` (npm `next` tag, requires `@aifcoding/memory-core@0.4.0`); `latest` is still `2.2.2`, which does not include them.
+> These features are available as the pre-release `@aifcoding/opencode-memory@2.3.0-rc.3` (npm `next` tag, requires `@aifcoding/memory-core@0.4.1`); `latest` is still `2.2.2`, which does not include them.
 
 On every model request, v2 runs one automatic memory pass:
 

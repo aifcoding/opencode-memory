@@ -64,9 +64,22 @@ export function isReferenceRequest(text: string): boolean {
   return REFERENCE.test(text);
 }
 
+/** 本条本身是问句：不是问答对的答案。 */
+const QUESTION_LIKE = /[？?]\s*$|(?:吗|呢)\s*[。.!！]?\s*$/;
+/** 要求助手去做事（改、写、列、删），不是陈述事实。 */
+const INSTRUCTION_LIKE = /(?:不要|别|请|帮我|给我|麻烦|把|改成|写成|列上|加上|删掉|重写|调整)/;
+/** 口语收尾与评价：多为对话反应，不含可复用事实。 */
+const CASUAL_TAIL = /(?:啊|吧|呗|哦|嘛|哈|啦|耶|了)\s*[。.!！]?\s*$/;
+const AGREEMENT = /^(?:好|好的|可以|行|对|嗯|是|没问题|ok)\s*[。.!！]?\s*$/i;
+
 function isAnswerToQuestion(text: string, previousAssistantText?: string): boolean {
   if (!previousAssistantText) return false;
-  if (text.trim().length > 400) return false;
+  const trimmed = text.trim();
+  if (trimmed.length > 400) return false;
+  if (QUESTION_LIKE.test(trimmed)) return false;
+  if (INSTRUCTION_LIKE.test(trimmed)) return false;
+  if (CASUAL_TAIL.test(trimmed)) return false;
+  if (AGREEMENT.test(trimmed)) return false;
   const asks = /[？?]\s*$|是什么|是多少|哪个|哪里|怎么连|如何配置|地址|端口|域名/.test(
     previousAssistantText,
   );

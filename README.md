@@ -224,7 +224,7 @@ capture 会增加模型调用成本并处理会话内容；默认关闭，候选
 
 ### 自动记忆（v2）
 
-> 本节功能已发布为预发布版 `@aifcoding/opencode-memory@2.3.0-rc.2`（npm `next` 标签，需 `@aifcoding/memory-core@0.4.0`）；`latest` 仍是 `2.2.2`，不包含这些能力。
+> 本节功能已发布为预发布版 `@aifcoding/opencode-memory@2.3.0-rc.3`（npm `next` 标签，需 `@aifcoding/memory-core@0.4.1`）；`latest` 仍是 `2.2.2`，不包含这些能力。
 
 v2 在每个模型请求前执行一次自动记忆流程：
 
