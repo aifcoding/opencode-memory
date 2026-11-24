@@ -57,7 +57,7 @@ Recall 分层召回配置（可选，走默认值即可）：
 
 `memory_recall` 默认只返回标题+摘要（无摘要时回退正文前 200 字符），预算外候选以轻量 Ref 列表返回，全文用 `memory_read` 获取。
 
-自动记忆（仅 v2；本地源码尚未发布，npm `2.2.2` 不含）：
+自动记忆（仅 v2；已发布到 npm `next`：`2.3.0-rc.2`，依赖 `@aifcoding/memory-core@0.4.0`；`latest` 仍为 `2.2.2`）：
 
 ```jsonc
 { "plugins": [{ "package": "@aifcoding/opencode-memory", "options": {
