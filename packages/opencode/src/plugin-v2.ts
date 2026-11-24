@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import type { PluginInput, ToolContext } from '@opencode-ai/plugin';
-import { v1Plugin } from './plugin-v1';
+import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
+import { ConfigSchema, defaultDbPath, readConfigFile, v1Plugin } from './plugin-v1';
+import { lastUserText, runAutoMemory, type AutoMemoryConfig } from './context/auto-memory';
 
 /**
  * v2 宿主适配器。
@@ -63,7 +65,11 @@ function eventSessionID(event: any): string | undefined {
   );
 }
 
-function createV2Client(ctx: V2Context, messageCache: Map<string, any[]>) {
+function createV2Client(
+  ctx: V2Context,
+  messageCache: Map<string, any[]>,
+  captureSessions: Set<string>,
+) {
   return {
     session: {
       async messages({ path }: { path: { id: string } }) {
@@ -74,6 +80,7 @@ function createV2Client(ctx: V2Context, messageCache: Map<string, any[]>) {
       },
       async create() {
         const session = await ctx.session.create({ title: 'memory-capture' });
+        if (session?.id) captureSessions.add(session.id);
         return { data: session };
       },
       async prompt({ path, body }: { path: { id: string }; body?: any }) {
@@ -87,6 +94,7 @@ function createV2Client(ctx: V2Context, messageCache: Map<string, any[]>) {
         return { data: { parts: [{ type: 'text', text: generated.text }] } };
       },
       async delete({ path }: { path: { id: string } }) {
+        captureSessions.delete(path.id);
         await ctx.session.remove({ sessionID: path.id });
         return { data: true };
       },
@@ -123,9 +131,31 @@ function jsonSchema(schema: z.ZodObject<z.ZodRawShape>) {
 
 export async function v2Setup(ctx: V2Context) {
   const messageCache = new Map<string, any[]>();
-  const input = { client: createV2Client(ctx, messageCache) } as unknown as PluginInput;
+  const captureSessions = new Set<string>();
+  const input = {
+    client: createV2Client(ctx, messageCache, captureSessions),
+  } as unknown as PluginInput;
   const hooks = (await v1Plugin(input, (ctx.options ?? {}) as Record<string, unknown>)) as V1Hooks;
   const anyHooks = hooks as any;
+
+  const parsedConfig = ConfigSchema.safeParse({
+    ...readConfigFile(),
+    ...((ctx.options ?? {}) as Record<string, unknown>),
+  });
+  const autoManager = parsedConfig.success
+    ? createSqliteMemoryManager({
+        dbPath: parsedConfig.data.dbPath ?? defaultDbPath(),
+        pinQuota: parsedConfig.data.pinQuota,
+      })
+    : undefined;
+  const autoConfig: AutoMemoryConfig | undefined = parsedConfig.success
+    ? { capture: parsedConfig.data.autoCapture, recall: parsedConfig.data.autoRecall }
+    : undefined;
+
+  const globalScope = { scope: 'global' as const, scopeKey: 'default' };
+  // 与现有工具和记忆统一使用 global/default：保证自动写入的记忆能被 memory_forget 管理。
+  // 项目隔离后续用 tags 表达（未实现）。
+  const projectScope = globalScope;
 
   await ctx.tool.transform((editor: any) => {
     for (const [name, tool] of Object.entries((hooks.tool ?? {}) as Record<string, any>)) {
@@ -168,6 +198,26 @@ export async function v2Setup(ctx: V2Context) {
     if (text) {
       event.messages.push({ role: 'user', content: [{ type: 'text', text }] });
     }
+    if (autoManager && autoConfig) {
+      try {
+        const pinned = await autoManager.getPinnedContext({ scope: globalScope });
+        const outcome = await runAutoMemory({
+          manager: autoManager,
+          config: autoConfig,
+          scope: projectScope,
+          globalScope,
+          sessionID: event.sessionID,
+          messages: event.messages,
+          excludeIds: pinned.entries.map((entry) => entry.id),
+          skipSessionIDs: captureSessions,
+        });
+        if (outcome.inject) {
+          event.messages.push({ role: 'user', content: [{ type: 'text', text: outcome.inject }] });
+        }
+      } catch (error) {
+        console.error('[opencode-memory] auto memory failed', error);
+      }
+    }
   });
 
   const controller = new AbortController();
@@ -195,6 +245,7 @@ export async function v2Setup(ctx: V2Context) {
 
   return async () => {
     controller.abort();
+    await autoManager?.close();
     await anyHooks.dispose?.();
   };
 }

@@ -25,7 +25,7 @@ const manager = createSqliteMemoryManager({ dbPath: '/tmp/memory.db' });
 
 | 能力 | 方法 |
 |---|---|
-| 长期记忆 | `storeMemory`、`recallMemories`、`listMemories`、`readMemory`、`forgetMemory` |
+| 长期记忆 | `storeMemory`、`updateMemoryContent`、`recallMemories`、`listMemories`、`readMemory`、`forgetMemory` |
 | Pin | `pinMemory`、`unpinMemory`、`listPinnedMemories`、`getPinnedContext` |
 | 情景摘要 | `archiveSummary`、`recallSummaries` |
 | Context KV | `setContextValue`、`getContextValue`、`listContextValues`、`deleteContextValue` |
@@ -34,6 +34,15 @@ const manager = createSqliteMemoryManager({ dbPath: '/tmp/memory.db' });
 方法使用对象参数并返回 Promise。`MemoryManagerOptions` 支持 `defaultScope`（默认 `global/default`）、`pinQuota`（默认 8000 字符）、`defaultOrigin` 和 `defaultTrust`。
 
 `PinResult` 会区分 `pinned`、`quota_exceeded`、`summary_required`、`trust_denied`、`not_found` 和 `deleted`。`getPinnedContext` 返回 `{ entries, text, size }`。
+
+### 自动记忆（供 v2 适配层使用）
+
+Core 提供两个可复用服务，但**不会自行触发**：
+
+- `AutoCaptureService`：按 5 类信号（显式/纠正/问答对/结构化值/决策）生成候选，写入时固定 `origin=agent`、`trust=low`；同 title 或"纠正"走 CAS 覆盖，且只覆盖 `origin=agent && trust=low` 的条目；命中现有凭据规则时整条拒绝，不保证完整识别。
+- `AutoRecallService`：对调用方提供的 scope 列表逐一执行 FTS，合并去重后进行标题关键词准入与条目预算筛选；当前没有独立 tags 检索通道。
+
+调度、注入位置、缓存与开关都在 OpenCode v2 适配层（`packages/opencode/src/context/auto-memory.ts`）。
 
 ### 分层 Recall
 
@@ -84,6 +93,10 @@ Tokenizer 是数据库索引格式的一部分；已有数据库必须使用兼�
 
 `MemoryStore` 是同步的低层扩展端口，负责存储原语、检索和事务一致性；`MemoryManager` 是异步公共边界，负责校验、默认值和结构化结果。`MemoryValidationError` 表示输入无效，`DuplicateMemoryError` 表示同一作用域中存在重复的未删除内容。
 
+### Capture API
+
+Capture API 包含 `beginCapture`、`completeCapture`、`failCapture`、`listMemoryCandidates`、`readMemoryCandidate` 和 `reviewMemoryCandidate`。候选隔离存储，默认 `origin=agent`、`trust=low`、`pending`；审批前不参与 recall 或 Pin。
+
 ## English
 
 `@aifcoding/memory-core` is a framework-independent local AI memory core. It provides an asynchronous `MemoryManager`, retrieval, Pin operations, and structured domain results.
@@ -98,7 +111,7 @@ The root entry provides types, `MemoryManager`, and the default tokenizer withou
 
 ### MemoryManager API
 
-The main methods are `storeMemory`, `recallMemories`, `listMemories`, `readMemory`, `forgetMemory`, `pinMemory`, `unpinMemory`, `listPinnedMemories`, `getPinnedContext`, `archiveSummary`, `recallSummaries`, `setContextValue`, `getContextValue`, `listContextValues`, `deleteContextValue`, and `close`. All methods take object arguments and return Promises.
+The main methods are `storeMemory`, `updateMemoryContent`, `recallMemories`, `listMemories`, `readMemory`, `forgetMemory`, `pinMemory`, `unpinMemory`, `listPinnedMemories`, `getPinnedContext`, `archiveSummary`, `recallSummaries`, `setContextValue`, `getContextValue`, `listContextValues`, `deleteContextValue`, and `close`. All methods take object arguments and return Promises.
 
 `MemoryManagerOptions` accepts `defaultScope` (default `global/default`), `pinQuota` (default 8000 characters), `defaultOrigin`, and `defaultTrust`. Long-term memories use an explicit `ScopeRef` or `defaultScope`; Context KV requires an explicit `contextKey`, which Core never infers.
 
@@ -111,6 +124,15 @@ Pin results include `pinned`, `quota_exceeded`, `summary_required`, `trust_denie
 ### Memory references
 
 `memory://local/memories/{id}` etc.; `parseMemoryReference` for strict parsing; `readReference` for resolution. Stable only within the same database. Summaries have no Scope, so MCP does not expose a generic reference tool.
+
+### Automatic memory (adapter-level)
+
+Core exposes two reusable services but never triggers them itself:
+
+- `AutoCaptureService`: turns five signal kinds (explicit, correction, Q&A, structured values, decisions) into candidates; writes with `origin=agent` and `trust=low`; updates by title or correction via CAS and only overwrites auto-written low-trust entries; rejects input matching the implemented credential rules only (not a complete guarantee).
+- `AutoRecallService`: runs FTS for each caller-provided scope, merges and deduplicates results, then applies title-keyword admission and item budgeting. There is currently no separate tag-retrieval channel.
+
+Scheduling, injection position, caching, and switches live in the OpenCode v2 adapter (`packages/opencode/src/context/auto-memory.ts`).
 
 ### Capture API
 

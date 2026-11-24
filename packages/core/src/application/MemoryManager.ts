@@ -13,7 +13,7 @@ import type {
   ReviewMemoryCandidateResult,
 } from '../domain/capture.js';
 import { renderPinnedBlock } from '../render/pinned-context.js';
-import type { MemoryStore } from '../ports/MemoryStore.js';
+import type { MemoryStore, UpdateContentResult } from '../ports/MemoryStore.js';
 import { MemoryValidationError } from '../errors.js';
 import {
   buildRecallResult,
@@ -136,8 +136,28 @@ export class MemoryManager {
       trust: input.trust ?? this.options.defaultTrust,
     });
   }
-  async recallMemories(input: RecallMemoriesInput): Promise<RecallMemoriesResult> {
-    this.nonEmpty(input.query, 'query');
+  /** CAS 更新正文：expectedRevision 与当前不一致时返回 conflict，不覆盖。 */
+  async updateMemoryContent(input: {
+    id: number;
+    content: string;
+    expectedRevision: number;
+    title?: string;
+    summary?: string;
+  }): Promise<UpdateContentResult> {
+    this.nonEmpty(input.content, 'content');
+    if (!Number.isInteger(input.expectedRevision) || input.expectedRevision < 1)
+      throw new MemoryValidationError('expectedRevision must be a positive integer');
+    const result = this.store.updateContent(
+      input.id,
+      input.content,
+      input.expectedRevision,
+      input.title,
+    );
+    if (result.conflict || !result.memory || input.summary === undefined) return result;
+    const withSummary = this.store.updateMeta(input.id, { summary: input.summary });
+    return { memory: withSummary ?? result.memory, conflict: false };
+  }
+  async recallMemories(input: RecallMemoriesInput): Promise<RecallMemoriesResult> {    this.nonEmpty(input.query, 'query');
     const requestedProjection: MemoryProjection = input.projection ?? 'summary';
     if (!MEMORY_PROJECTIONS.includes(requestedProjection))
       throw new MemoryValidationError('projection must be one of title, summary, full');

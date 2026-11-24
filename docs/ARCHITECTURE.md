@@ -31,15 +31,17 @@
 | D4 | 嵌入 | 默认关闭，`EmbeddingProvider` 接口 | 规划中 |
 | D5 | 分词 | 单方法 `Tokenizer` 接口；默认 jieba-wasm；写入和查询共用同一实例 | 已实现 |
 | D6 | 上下文注入 | `messages.transform` 消息末尾注入（ephemeral） | 已实现 |
-| D7 | 信任分级 | trust=high/low，入口决定 | 部分（MVP 统一 user/high） |
+| D7 | 信任分级 | trust=high/low，入口决定 | 部分（手动 user/high；自动采集 agent/low；未做升级审批） |
 | D8 | Pin 策略 | 仅显式 pin；full/summary 双模式 + 按渲染长度配额、`BEGIN IMMEDIATE` 原子校验与更新 | 已实现 |
-| D9 | 作用域 | scope + scope_key | 部分（MVP 仅 global） |
+| D9 | 作用域 | scope + scope_key | 部分（自动记忆统一 global/default；MCP 使用固定 project） |
 | D10 | 迁移 | 版本化顺序迁移；`BEGIN IMMEDIATE` 取写锁后单事务内完成校验/迁移/记录 | 已实现 |
 | D11 | 更新策略 | 元数据专用 UPDATE；内容 CAS 乐观锁 | 已实现 |
 | D12 | 一致性 | 主表 + FTS 同事务；WAL + busy_timeout + 写重试 | 已实现 |
 | D13 | 召回语义 | 无匹配返回空；结果带 id+score | 已实现 |
 | D14 | 多源检索缝 | 只读 `MemorySource[]` fan-out | 规划中 |
 | D15 | 身份键 | project 用 `realpath`/安装 UUID | 规划中 |
+| D16 | 自动写入（v2） | 复用 `memories`；`origin=agent`/`trust=low`；同 title 或纠正时 CAS 覆盖；不覆盖人工记忆 | 已实现 |
+| D17 | 自动召回（v2） | 默认 `auto`；服务支持多 scope，当前适配器使用 `global/default`；FTS + 标题准入 + 预算；注入消息末尾、不落库；缓存按依赖指纹失效 | 部分（无 embedding，阈值未标定） |
 
 **Core 已实现**：MemoryManager、MemoryStore 端口、Tokenizer 注入、SQLite/FTS5 存储与检索、显式 pin + 配额、软删去重、CAS 乐观锁、WAL + 写重试、顺序迁移。
 
@@ -85,13 +87,13 @@ approved/rejected 候选再次审批返回 already_reviewed。候选固定 origi
 
 ### 防递归污染
 
-提取输入只保留可确认来源的用户和助手自然语言文本，排除 tool call/result、非文本 Part、Pin overlay 及 msg_mem_/prt_mem_ marker、memory_recall/read/recall_summaries/候选工具结果、memory-context/mem_block 参考块、提取 Agent 自身输出。过滤优先依赖消息角色、Part 类型、synthetic 标记和插件 marker。
+提取输入只保留 `user`/`assistant` 角色、非 synthetic、非插件 marker（`msg_mem_`/`prt_mem_`）的文本 Part，排除 tool call/result、非文本 Part 与提取 Agent 自身输出。**当前不剥离普通用户文本中内联的 `memory-context`/`mem_block` 正文**；若注入块与用户文本处于同一条消息，其正文仍可能进入候选提取。
 
 ### 安全扫描
 
-候选写入前和批准前都执行确定性扫描：高置信凭据、私钥标记、Bearer/JWT/云访问键、Cookie/Token/API Key 键值、双向控制字符、高风险不可见 Unicode。命中候选不持久化，只记录风险代码和数量，不记原文。扫描不构成 Prompt Injection 完整防护，最终安全门是用户审批。
+候选写入前和批准前都执行确定性扫描：高置信凭据、私钥标记、Bearer/JWT/云访问键、Cookie/Token/API Key 键值、双向控制字符、高风险不可见 Unicode。命中候选不持久化，只记录风险代码和数量，不记原文。扫描不构成 Prompt Injection 完整防护；最终安全门依赖用户显式审批，但插件不强制确认。
 
-**规划中（数据模型已预留字段，代码未实现）**：向量检索/内联余弦、`EmbeddingProvider`、Tokenizer 身份持久化和兼容检测、多源 `MemorySource[]`、project 身份键隔离、严格信任分级，以及 MCP、CLI 等新的 Core 适配器。自动索引重建尚未决定；当前已实现单方法 `Tokenizer` 注入，默认实现为 jieba-wasm。
+**规划中（数据模型已预留字段，代码未实现）**：向量检索/内联余弦、`EmbeddingProvider`、Tokenizer 身份持久化和兼容检测、多源 `MemorySource[]`、project 身份键隔离、严格信任分级，以及 CLI 等新的 Core 适配器。自动索引重建尚未决定；当前已实现单方法 `Tokenizer` 注入，默认实现为 jieba-wasm。
 
 ## 总体架构
 
@@ -396,19 +398,19 @@ query
 当前面向单用户本地环境。已实现的安全性质：
 
 1. **参考块标记**：记忆以 reference 块注入，并提示模型视为参考数据；该标记是模型侧提示，不构成对提示注入的机制防护
-2. **注入隔离**：固定记忆由 `memory_pin` 显式指定，非固定内容不自动注入
+2. **注入边界**：v2 默认可自动注入非固定记忆（包括 `trust=low` 的自动采集条目）；参考块标记是模型侧提示，不构成机制隔离
 3. **无动态 SQL**：过滤用结构化参数，LLM 不接触 SQL 文本
 4. **软删与去重**：删除为软删（不参与检索），`(scope, scope_key, content_hash)` 去重
 
-边界（当前版本未实现，勿据此做安全承诺）：
+边界与限制（下列含已实现的现状说明与未实现项；勿据此做超出事实的安全承诺）：
 
-- 信任分级为简化实现：工具写入统一标记 `origin=user`、`trust=high`；Core 已支持 `trust=low` 且低信任内容固定时返回 `trust_denied`，但未做多来源分级与升级审批
-- 未做 secret 检测（token/api key/.env）与日志脱敏
+- 信任策略按入口区分：手动 `memory_store` 为 `origin=user`/`trust=high`；自动采集为 `origin=agent`/`trust=low`，直接写入正式表、不经过候选审批；`capture` 候选需审批；低信任内容固定时返回 `trust_denied`；未做多来源分级与升级审批
+- 部分入口（`capture`、`autoCapture`）有规则式凭据扫描，非全局完整检测；未做统一日志脱敏
 - 召回/固定的内容会进入模型上下文；若使用远程模型提供商，内容可能随请求发送给该提供商
 
 ## 测试现状
 
-已自动覆盖（`bun test`，126 个测试）：
+已自动覆盖（`bun test`；用例数随版本变化，以实际运行为准）：
 
 - 存储：CRUD、软删去重、FTS 同步、元数据更新不清 embedding、CAS 冲突、归档幂等
 - 检索：中文召回（2 字词/标识符）、无匹配返空、scope 过滤、排序

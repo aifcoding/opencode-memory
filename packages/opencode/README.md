@@ -57,6 +57,23 @@ Recall 分层召回配置（可选，走默认值即可）：
 
 `memory_recall` 默认只返回标题+摘要（无摘要时回退正文前 200 字符），预算外候选以轻量 Ref 列表返回，全文用 `memory_read` 获取。
 
+自动记忆（仅 v2；本地源码尚未发布，npm `2.2.2` 不含）：
+
+```jsonc
+{ "plugins": [{ "package": "@aifcoding/opencode-memory", "options": {
+  "autoCapture": { "enabled": true, "mode": "on", "maxWritesPerTurn": 3 },
+  "autoRecall": {
+    "mode": "auto",
+    "maxItems": 3,
+    "maxCharacters": 300
+  }
+} }] }
+```
+
+- `autoCapture`：按信号自动写入低信任记忆（`origin=agent`、`trust=low`）；`shadow` 生成候选但不写入，仍推进会话游标，无决策记录。
+- `autoRecall`：`auto` 检索并注入摘要（统一 `global/default`、FTS + 标题准入、预算含围栏），`hint` 只注入固定检索提示，`shadow` 不检索不注入。
+- 自动写入不会覆盖人工记忆；凭据过滤只拒绝命中现有规则的输入，不是完整安全保证。
+
 更多功能、配置和工具说明见仓库根目录的 [`README.md`](https://github.com/aifcoding/opencode-memory/blob/main/README.md) 和 [`docs/CONFIGURATION.md`](https://github.com/aifcoding/opencode-memory/blob/main/docs/CONFIGURATION.md)。
 
 ## OpenCode adapter overview
@@ -75,7 +92,9 @@ The `<memory-context>` and `<mem_block>` fences are model-side prompts, not a me
 
 Tool descriptions and results are currently in Simplified Chinese; English localization is not implemented.
 
-Capture is disabled by default. When enabled, configure `capture.enabled`, `capture.agent`, optional `capture.onCompaction` (default `true`), and `capture.maxCandidates` (default `8`). The adapter provides `memory_capture`, `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`; candidates remain low-trust until explicitly approved.
+Capture is disabled by default. When enabled, configure `capture.enabled`, `capture.agent`, optional `capture.onCompaction` (default `true`), and `capture.maxCandidates` (default `8`). The adapter provides `memory_capture`, `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`; candidates remain low-trust until explicitly approved, and the plugin does not enforce human confirmation.
+
+Automatic memory is v2-only and enabled by default for capture: `autoCapture` writes low-trust memories (`origin=agent`, `trust=low`) from five signal kinds and never overwrites user-authored memories; credential filtering only rejects input matching the implemented rules. `autoRecall` defaults to `auto`, always uses `global/default`, applies FTS plus title-keyword admission, and injects a summary block whose budget includes fences and notes; `hint` injects only a fixed retrieval prompt and `shadow` neither retrieves nor injects. Capture `shadow` still advances the session cursor and provides no decision record. There is no tag-retrieval channel and no project isolation.
 
 `autoUpdate` defaults to `true`. At startup the adapter checks npm and refreshes only its own OpenCode cache when a newer version exists; the update is non-blocking and requires an OpenCode restart. Network/install failures are silent.
 
@@ -265,7 +284,7 @@ memory_store(
 |---|---|---|
 | `recall_summaries` | 检索历史会话中自动归档的压缩摘要 | `query: string` 必填 |
 
-每次收到 `session.compacted` 事件后，插件读取 compaction agent 生成的摘要，并以压缩消息 ID 幂等写入 `session_summaries`。
+每次收到 v1 `session.compacted` 或 v2 `session.compaction.ended` 事件后，插件读取 compaction agent 生成的摘要，并以压缩消息 ID 幂等写入 `session_summaries`。
 
 ### 会话工作记忆
 
@@ -464,7 +483,7 @@ These keys are scoped by `sessionID` and persist (no auto-cleanup in the current
 |---|---|---|
 | `recall_summaries` | Search auto-archived compaction summaries from past sessions | `query: string` required |
 
-On each `session.compacted` event, the plugin reads the summary produced by the compaction agent and idempotently writes it to `session_summaries`, keyed by the compaction message ID.
+On each v1 `session.compacted` or v2 `session.compaction.ended` event, the plugin reads the summary produced by the compaction agent and idempotently writes it to `session_summaries`, keyed by the compaction message ID.
 
 ### Session working memory
 

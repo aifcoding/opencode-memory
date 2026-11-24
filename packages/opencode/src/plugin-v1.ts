@@ -33,7 +33,7 @@ function wrapMemoryContext(
   return `<memory-context source="${source}" id="${escapeXmlAttribute(id)}" trust="${escapeXmlAttribute(trust)}">\n${MEMORY_CONTEXT_NOTICE}\n\n${escapeXmlText(text)}\n</memory-context>`;
 }
 
-const ConfigSchema = z
+export const ConfigSchema = z
   .object({
     dbPath: z.string().min(1).refine(isAbsolute, 'dbPath 必须是绝对路径').optional(),
     pinQuota: z.number().int().positive().optional(),
@@ -54,6 +54,22 @@ const ConfigSchema = z
       })
       .strict()
       .default({ maxCharacters: 3000, maxOverflowItems: 10, maxOverflowCharacters: 1500 }),
+    autoCapture: z
+      .object({
+        enabled: z.boolean().default(true),
+        mode: z.enum(['shadow', 'on']).default('on'),
+        maxWritesPerTurn: z.number().int().min(0).max(10).default(3),
+      })
+      .strict()
+      .default({ enabled: true, mode: 'on', maxWritesPerTurn: 3 }),
+    autoRecall: z
+      .object({
+        mode: z.enum(['off', 'hint', 'shadow', 'auto']).default('auto'),
+        maxItems: z.number().int().min(1).max(10).default(3),
+        maxCharacters: z.number().int().min(50).max(1200).default(300),
+      })
+      .strict()
+      .default({ mode: 'auto', maxItems: 3, maxCharacters: 300 }),
     autoUpdate: z.boolean().default(true),
   })
   .strict();
@@ -148,7 +164,7 @@ function opencodeDataDir(): string {
 }
 
 // 默认数据库位置：opencode 数据根下的 memory/ 子目录（与 opencode 自身的 log/、storage/ 等子目录一致）
-function defaultDbPath(): string {
+export function defaultDbPath(): string {
   return join(opencodeDataDir(), 'memory', 'memory.db');
 }
 
@@ -158,7 +174,7 @@ function opencodeConfigDir(): string {
 }
 
 // 读取独立配置文件（可选；.jsonc 优先，.json 兜底）。文件不存在则忽略，读取/解析失败显式报错。
-function readConfigFile(): Record<string, unknown> {
+export function readConfigFile(): Record<string, unknown> {
   for (const name of ['opencode-memory.jsonc', 'opencode-memory.json']) {
     const configPath = join(opencodeConfigDir(), name);
     let raw: string;
@@ -370,7 +386,7 @@ export const v1Plugin: Plugin = async (
 
       memory_recall: {
         description:
-          '检索已存的记忆。默认返回标题+摘要（无摘要时为正文前 200 字预览），不返回全文；全文用 memory_read。有 query 无匹配返回空，绝不返回无关条目。score 仅表示本次查询的相对相关度，不能跨查询比较。',
+          '检索已存的记忆。涉及历史决策、既有配置、"上次/之前"的结论时优先调用。默认返回标题+摘要（无摘要时为正文前 200 字预览），不返回全文；全文用 memory_read。有 query 无匹配返回空，绝不返回无关条目。score 仅表示本次查询的相对相关度，不能跨查询比较。',
         args: {
           query: z.string().trim().min(1).describe('检索词或问题'),
           maxCharacters: z

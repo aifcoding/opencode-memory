@@ -39,6 +39,36 @@ export type {
 export { renderPinnedBlock, renderPinnedEntry } from './render/pinned-context.js';
 export { escapeXmlText } from './render/xml.js';
 export { MemoryManager, DEFAULT_PIN_QUOTA } from './application/MemoryManager.js';
+export {
+  AutoCaptureService,
+  detectSignals,
+  extractCandidates,
+  hasCredential,
+  isReferenceRequest,
+  normalizeTitle,
+} from './application/AutoCaptureService.js';
+export { AutoRecallService } from './application/AutoRecallService.js';
+export {
+  AUTO_CAPTURE_MODES,
+  AUTO_RECALL_HINT,
+  AUTO_RECALL_MODES,
+  AUTO_SIGNALS,
+  DEFAULT_AUTO_CAPTURE,
+  DEFAULT_AUTO_RECALL,
+} from './domain/auto-memory.js';
+export type {
+  AutoCandidate,
+  AutoCaptureConfig,
+  AutoCaptureInput,
+  AutoCaptureMode,
+  AutoCaptureResult,
+  AutoRecallConfig,
+  AutoRecallInput,
+  AutoRecallItem,
+  AutoRecallMode,
+  AutoRecallResult,
+  AutoSignal,
+} from './domain/auto-memory.js';
 export type {
   ArchiveSummaryInput,
   ContextInput,

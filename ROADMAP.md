@@ -13,9 +13,10 @@
 
 - **Headless Core**：`@aifcoding/memory-core` 与 `@aifcoding/opencode-memory` monorepo、MemoryManager 和 SQLite 子路径。
 - **可插件化分词器**：单方法 `Tokenizer` 接口、默认 jieba-wasm 和 SQLite 注入选项。
-- **安全辅助记忆提取**：候选隔离、确定性安全扫描和人工审批流程。
+- **安全辅助记忆提取**：候选隔离、确定性安全扫描和人工审批流程（插件不强制确认）。
 - **MCP Server**：`@aifcoding/memory-mcp`——官方 MCP SDK v2、stdio transport、固定 project Scope、readonly/full Profile、声明式 Tool Registry 和六个 capability、structuredContent 与文本参考围栏、Candidate list/read/review。
 - **插件自更新**：检查 npm 新版本 + 刷新自身缓存 + 提示重启。
+- **自动记忆（v2）**：context hook 内自动采集（5 类信号、`origin=agent`/`trust=low`、同 title 或纠正 CAS 覆盖、只覆盖 `origin=agent && trust=low` 条目、命中现有凭据规则时整条拒绝但不保证完整识别）+ 自动召回（实体准入、预算、依赖指纹缓存）；默认 `auto`，`v1` 不启用。
 - **v2.1.0 记忆读路径升级**：L0/L1/L2 分层 Recall、默认 Summary Projection、Detail 字符预算、Overflow 条数/字符双预算（ID/Ref/Title/Trust/Score）、同库稳定 Memory Ref、Core `readReference`、OpenCode/MCP 分层读路径、零数据库迁移。
 
 ## 近期规划
@@ -25,7 +26,6 @@
 - [ ] **召回评测基准**（Recall@K / MRR）——建立可复现数据集，量化现有 FTS 检索效果。
 - [ ] **真实提取 Agent 评测基线**——在人工金标集上运行真实模型，记录 Precision/Recall。
 - [ ] **MCP Streamable HTTP**——在有真实远程使用需求后增加认证、Host/Origin 校验、请求限制和 HTTPS 部署说明；Legacy SSE 仅在兼容性需求明确时考虑。
-- [ ] **会话收尾自动提取 + origin=agent 信任分级**——低信任内容不自动注入。
 - [ ] **Tokenizer 索引兼容管理**——持久化 tokenizer id/version，检测不兼容；自动索引重建尚未决定。
 - [ ] **向量检索 + RRF**——仅当评测证明 FTS 对同义改写召回不足时实施。
 - [ ] **项目级身份隔离**（D15）——用规范化 realpath 或安装 UUID 做稳定身份键。

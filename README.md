@@ -41,7 +41,8 @@
 - **自动归档**：OpenCode compaction 摘要自动幂等保存并可跨会话检索。
 - **可复用 Core**：异步 `MemoryManager` 与可注入 `Tokenizer`。
 - **分层召回**：默认返回标题+摘要（L1），字符预算控制长度，超出预算的候选以轻量标题列表导航，按需 `readMemory` 取全文。
-- **安全辅助提取（默认关闭）**：从会话生成低信任候选，必须人工审批后才成为正式记忆。
+- **安全辅助提取（默认关闭）**：从会话生成低信任候选，需显式审批后才成为正式记忆；插件本身不强制用户确认。
+- **自动记忆（仅 OpenCode v2）**：默认从规则命中的用户输入写入低信任长期记忆，并自动检索、筛选和注入相关摘要。`hint` 模式仅注入固定检索提示，不执行自动摘要召回。
 
 ## 快速开始
 
@@ -75,7 +76,7 @@ OpenCode 启动时会通过 Bun 自动安装并缓存插件。
 记住：这个项目统一使用 Bun，不使用 npm 或 yarn。安装依赖和运行脚本都使用 bun。
 ```
 
-插件会调用 `memory_store`，并返回类似结果：
+模型可能调用 `memory_store`，返回类似结果（示例）：
 
 ```text
 已记住 (id=1) Bun 包管理约定
@@ -124,7 +125,7 @@ bun install
 bun run build
 ```
 
-源码构建后注册 `packages/opencode/dist/plugin.js`。
+源码构建后，v1 使用 `packages/opencode/dist/plugin.js`；v2 的本地插件配置必须指向 `packages/opencode` 包目录，而不是该 JS 文件。
 
 #### 安全辅助记忆提取（可选）
 
@@ -156,8 +157,27 @@ bun run build
 | `capture.onCompaction` | `boolean` | `true` | 启用后是否在 compaction 归档成功后触发 |
 | `capture.agent` | `string` | 无 | 提取 Agent 名称；启用 capture 时必填 |
 | `capture.maxCandidates` | `number` | `8` | 单次最多生成的候选数量（1..20） |
+| `autoCapture.enabled` | `boolean` | `true` | 是否自动写入高置信信号（`origin=agent`、`trust=low`） |
+| `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` 生成候选但不写入；仍推进会话游标，无决策记录 |
+| `autoCapture.maxWritesPerTurn` | `number` | `3` | 单轮最多写入条数（0..10） |
+| `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` 检索并注入摘要；`hint` 只注入固定检索规则 |
+| `autoRecall.maxItems` | `number` | `3` | 单次最多注入条数（1..10） |
+| `autoRecall.maxCharacters` | `number` | `300` | 注入块字符上限（50..1200，含围栏与说明）；仅 `auto` 模式，`hint` 固定提示不受此限制 |
 
 capture 会增加模型调用成本并处理会话内容；默认关闭，候选审批前不会参与召回、Pin 或注入。
+
+`capture` 与 `autoCapture` 是两条独立路径：`capture` 默认关闭，生成待审批的 `memory_candidates`；`autoCapture` 在 v2 默认开启，直接写入 `memories`，无需候选审批，写入后即可参与检索和自动召回，仍标记为 `origin=agent`、`trust=low`。凭据过滤仅拒绝命中现有规则的输入，不保证识别所有敏感信息；不要输入或保存凭据。使用远程模型时，自动召回的内容可能随请求发送给提供商。
+
+如需关闭自动记忆（不影响独立配置的 `capture`）：
+
+```jsonc
+{
+  "autoCapture": { "enabled": false },
+  "autoRecall": { "mode": "off" }
+}
+```
+
+`autoCapture` 与 `autoRecall` 按整个对象覆盖，不逐字段合并；对象内缺省字段使用代码默认值。
 
 ## 详细文档
 
@@ -193,7 +213,7 @@ capture 会增加模型调用成本并处理会话内容；默认关闭，候选
 
 ### 固定记忆注入
 
-固定记忆通过 OpenCode 的 `experimental.chat.messages.transform` 扩展点附加到消息末尾：
+固定记忆通过 v1 的 `experimental.chat.messages.transform` 或 v2 的 `session.hook("context")` 附加到消息末尾：
 
 - 仅作为参考信息注入
 - 注入块标记为参考数据、提示模型视为参考；该标记是提示性的，不构成对提示注入的机制防护
@@ -202,9 +222,21 @@ capture 会增加模型调用成本并处理会话内容；默认关闭，候选
 - `summary` 模式注入摘要，`full` 模式注入正文
 - 超出配额时拒绝新的固定操作
 
+### 自动记忆（v2）
+
+> 本节功能仅存在于当前本地源码，尚未发布；npm `@aifcoding/opencode-memory@2.2.2` 不包含这些能力。
+
+v2 在每个模型请求前执行一次自动记忆流程：
+
+1. **采集**：只从最后一条识别出的真实用户消息提取，助手文本仅辅助问答判断，不归档助手最终回复；识别 5 类信号（显式、纠正、问答对、结构化值、决策与否决），写入 `memories`（`origin=agent`、`trust=low`）。
+2. **召回**：默认 `auto`，统一使用 `global/default`，走 FTS + 标题关键词准入（英文词边界、泛词过滤），注入摘要块；`hint` 只注入固定检索提示；缓存按「用户问题 + 最近工具结果」区分。
+3. **隔离**：自动记忆调用有外层异常捕获；采集与召回已分别 try/catch，但 Pin transform 在该捕获之外。注入不落库。
+
+限制：游标按用户文本 hash 去重，相同文本后续输入可能跳过；每次最多前 3 个句段；纠正无同标题匹配时会覆盖最近一条 agent/low 记忆，不保证同一实体；规则主要面向中文，质量未标定；人工记忆不会被自动改写；凭据过滤只拒绝命中规则的输入，不是完整保证；v1 不启用。
+
 ### 会话压缩归档
 
-OpenCode Adapter 在 `session.compacted` 后提取摘要，Core 以消息 ID 幂等写入 `session_summaries`。
+OpenCode Adapter 在 v1 `session.compacted` / v2 `session.compaction.ended` 后提取摘要，Core 以消息 ID 幂等写入 `session_summaries`。自动采集与自动召回仅在 v2 启用。
 
 ### 数据持久化
 

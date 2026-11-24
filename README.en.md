@@ -41,7 +41,8 @@ Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowled
 - **Automatic archiving**: OpenCode compaction summaries are archived idempotently and searchable across sessions.
 - **Reusable Core**: async `MemoryManager` and injectable `Tokenizer`.
 - **Layered recall**: returns title + summary (L1) by default, with a character budget; overflow candidates become a lightweight title-only navigation list, and full content is fetched on demand via `readMemory`.
-- **Safe assisted capture (disabled by default)**: session-derived low-trust candidates require human approval before becoming formal memories.
+- **Safe assisted capture (disabled by default)**: session-derived low-trust candidates require explicit approval before becoming formal memories; the plugin does not enforce human confirmation.
+- **Automatic memory (OpenCode v2 only)**: by default, rule-matched user input is stored as low-trust long-term memory, and relevant summaries are retrieved, filtered, and injected automatically. `hint` mode only injects a fixed retrieval prompt; it does not automatically retrieve summaries.
 
 ## Quick start
 
@@ -75,7 +76,7 @@ Just tell OpenCode in plain language:
 Remember: this project uses Bun everywhere, not npm or yarn.
 ```
 
-The plugin calls `memory_store` and replies with something like:
+The model may call `memory_store`; an example reply:
 
 ```text
 已记住 (id=1) Bun 包管理约定
@@ -124,7 +125,7 @@ bun install
 bun run build
 ```
 
-Then register `packages/opencode/dist/plugin.js`.
+After building, v1 uses `packages/opencode/dist/plugin.js`. For v2, local plugin configuration must point to the `packages/opencode` package directory, not that JS file.
 
 #### Safe assisted memory capture (optional)
 
@@ -156,12 +157,31 @@ Configuration comes from `~/.config/opencode/opencode-memory.jsonc` (or `.json`)
 | `capture.onCompaction` | `boolean` | `true` | Trigger after successful compaction archival when enabled |
 | `capture.agent` | `string` | none | Extractor agent; required when enabled |
 | `capture.maxCandidates` | `number` | `8` | Maximum candidates per run (1..20) |
+| `autoCapture.enabled` | `boolean` | `true` | Write high-confidence signals as low-trust memories |
+| `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` generates candidates without writing; it still advances the session cursor and records no decisions |
+| `autoCapture.maxWritesPerTurn` | `number` | `3` | Maximum writes per turn (0..10) |
+| `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` retrieves and injects summaries; `hint` injects only a fixed retrieval rule |
+| `autoRecall.maxItems` | `number` | `3` | Maximum injected memories (1..10) |
+| `autoRecall.maxCharacters` | `number` | `300` | Character budget for the injected block (50..1200, fences included); applies to `auto` only, `hint` is a fixed prompt |
 
 Capture adds model cost and processes session content. It is disabled by default; candidates do not participate in recall, Pin, or injection before approval.
 
+`capture` and `autoCapture` are independent paths. `capture` is disabled by default and creates pending `memory_candidates` for approval. In v2, `autoCapture` is enabled by default and writes directly to `memories` without candidate approval; these entries can immediately participate in retrieval and automatic recall, while remaining marked `origin=agent`, `trust=low`. Credential filtering only rejects input matching the implemented rules; it cannot detect every secret. Do not enter or store credentials. Automatically recalled content may be sent to your model provider when using a remote model.
+
+To disable automatic memory (this does not affect separately configured `capture`):
+
+```jsonc
+{
+  "autoCapture": { "enabled": false },
+  "autoRecall": { "mode": "off" }
+}
+```
+
+`autoCapture` and `autoRecall` replace their objects rather than merging individual fields; omitted fields use code defaults.
+
 ## Usage examples
 
-Complete OpenCode conversation examples and the 12-tool reference are in [`packages/opencode/README.md`](packages/opencode/README.md).
+Complete OpenCode conversation examples and the tool reference are in [`packages/opencode/README.md`](packages/opencode/README.md).
 
 ## How it works
 
@@ -188,7 +208,7 @@ Characteristics:
 
 ### Pinned-memory injection
 
-Pinned memories are appended to the end of messages through OpenCode's `experimental.chat.messages.transform` extension point:
+Pinned memories are appended to the end of messages through v1 `experimental.chat.messages.transform` or v2 `session.hook("context")`:
 
 - Injected as reference information only
 - The injected block is marked as reference data with a hint to treat it as reference, not instruction; this is a model-facing hint, not a security boundary against prompt injection
@@ -197,9 +217,21 @@ Pinned memories are appended to the end of messages through OpenCode's `experime
 - `summary` mode injects the summary; `full` mode injects the content
 - New pins are rejected when the quota is exceeded
 
+### Automatic memory (v2)
+
+> These features exist only in the current local source and have not been published; npm `@aifcoding/opencode-memory@2.2.2` does not include them.
+
+On every model request, v2 runs one automatic memory pass:
+
+1. **Capture**: extracts only from the last message recognized as genuine user input. Assistant text only assists Q&A detection; final assistant replies are not archived. Detects five signal kinds (explicit, correction, Q&A, structured values, decisions/negations) and writes `memories` with `origin=agent` and `trust=low`.
+2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result.
+3. **Isolation**: the automatic-memory call has an outer error handler; capture and recall are separately wrapped, but the Pin transform sits outside it. Injected content is not persisted.
+
+Limitations: the cursor deduplicates by user-text hash, so later identical input may be skipped; at most the first 3 sentence segments are considered; a correction without a title match overwrites the latest agent/low memory and may target a different entity; rules primarily target Chinese and are not quality-calibrated; user-authored memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this.
+
 ### Session compaction archiving
 
-After `session.compacted`, the adapter extracts the summary and Core archives it idempotently by message ID in `session_summaries`.
+After v1 `session.compacted` or v2 `session.compaction.ended`, the adapter extracts the summary and Core archives it idempotently by message ID in `session_summaries`. Automatic capture and recall are enabled only in v2.
 
 ### Data persistence
 
