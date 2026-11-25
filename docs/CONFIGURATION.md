@@ -61,23 +61,56 @@ $HOME/.config/opencode
 | `autoCapture.enabled` | `boolean` | `true` | 是否启用自动采集（按准入矩阵写入或落候选） |
 | `autoCapture.mode` | `'off' \| 'shadow' \| 'on'` | `'on'` | `on` 按矩阵直写 + 落候选；`shadow` 只计算不写任何表，仍推进会话游标；`off` 等价于 `enabled=false` |
 | `autoCapture.maxWritesPerTurn` | `number` | `3` | 单条消息最多写入条数，直写与候选合计（0..10，超大值按 3 截断） |
+| `capture.enabled` | `boolean` | `false` | 是否启用 LLM 辅助提取（压缩后 / 手动 `memory_capture`） |
+| `capture.onCompaction` | `boolean` | `true` | 压缩后自动触发提取 |
+| `capture.agent` | `string` | 未配置 | **可选**：缺省使用宿主默认模型；配置后固定到该 agent（例如专用 ds flash agent） |
+| `capture.maxCandidates` | `number` | `8` | 单次最多候选（1..20） |
 | `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` 检索并注入摘要；`hint` 只注入固定检索提示；`shadow` 不检索不注入，无决策记录 |
 | `autoRecall.maxItems` | `number` | `3` | 单次最多注入条数（1..10） |
 | `autoRecall.maxCharacters` | `number` | `300` | 注入块字符上限（50..1200，含围栏与说明）；仅 `auto` 模式，`hint` 固定提示约 143 字符不受此限制 |
 
 行为与限制：
 
-- 准入矩阵（v1，规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）：E1 明确保存、S1 完整配置绑定、D1 明确选型 → 直写 `memories`（`origin=agent`、`trust=low`）；E2/S2/D2/C2 → 写 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时 CAS 更新；Q（纯问答对）与 N 丢弃。
+- 准入矩阵（v1，规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）：E1 明确保存、S1 完整配置绑定、D1 明确选型 → 直写 `memories`（`origin=agent`、`trust=low`）；E2/S2/D2/C2 → 写 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时 CAS 更新；Q 落低价值候选，N 丢弃。
 - 未审批候选不在 `memories` 表，默认召回与 `memory_recall` 都不会返回；审批沿用现有候选审核流程。
 - 直写与更新都不会改写人工记忆或高信任记忆；非 C1 路径一律不得按标题覆盖，同键或同标题出现不同内容时只落候选（值比较按边界匹配，`1808` 不命中 `18080`）。
 - 代码围栏与引用块内容不参与判定；C1 需给出白名单字段与合法新值；自动条目标题为单个宽泛词时不参与自动召回注入。
-- 限流：单条消息最多 3 条（直写 + 候选）；同一 scope 每日最多 20 条新增待审候选；14 天候选过期尚未实现。
+- 限流：单条消息最多 3 条直写，超出转候选；同一 scope 每日最多 20 条**新增**候选（按当天创建数计，批准不恢复额度）；14 天候选过期尚未实现。
+- 凭据：命中片段脱敏为 `[REDACTED]` 后继续；整条仅凭据时放弃；`password=环境变量` 等占位符不脱敏。
+- 问答对（qa）不再直接丢弃，改为落低价值候选（长度 <2 字符仍丢弃）。
 - 凭据过滤只拒绝命中现有规则的输入（密码、token、私钥、含 userinfo 的连接串），不保证识别所有敏感信息；不要输入或保存凭据。
 - 自动召回统一使用 `global/default`，无项目隔离、无独立 tags 检索通道；准入按标题关键词、英文词边界与泛词过滤。
 - 自动召回块位于 Pin 块之后；注入不落库，每个模型 step 都会重新提供；预算包含围栏、说明与换行。
-- 采集只取最后一条真实用户消息，不归档助手最终回复；游标按文本 hash 去重，相同文本后续输入会跳过；问答对不再产生任何持久化。
+- 采集只取最后一条真实用户消息，不归档助手最终回复；游标按文本 hash 去重，相同文本后续输入会跳过；问答对落低价值候选（纯确认/填充语仍丢弃）。
 - 规则主要面向中文，质量阈值未标定；`v1` 不启用自动记忆。
+- **辅助提取默认关闭**；启用后会把经本地脱敏的会话材料发送给所选模型，可能产生费用；脱敏基于正则，**不保证识别所有秘密**。
 - 配置非法（未知字段、越界值、非法枚举，例如 `autoCapture.mode: "active"`）时插件显式报错并拒绝加载，不静默回退到默认值；日志为 `failed to load plugin … invalid config: <字段>: <原因>`，此时记忆工具与自动记忆都不可用，需修正配置后重载。
+
+
+#### 通用提取目标（设计已定，尚未接线）
+
+> 阶段 ① 仅实现了校验函数（`parseCaptureTarget` / `validateCaptureConfig`）；OpenCode 适配层尚未读取该配置。
+
+```jsonc
+{
+  "capture": {
+    "enabled": true,
+    "onCompaction": true,
+    "target": { "kind": "model", "provider": "extractor", "model": "YOUR_MODEL" },
+    "maxCandidates": 8
+  }
+}
+```
+
+| 字段 | 取值 | 说明 |
+|---|---|---|
+| `capture.target.kind` | `model` \| `agent` \| `host-default` | 互斥；`enabled=true` 时必须提供且可解析 |
+| `model` 目标 | `provider` + `model` | `provider` 是配置里的 provider 键名，不接受 URL/内嵌凭据 |
+| `agent` 目标 | `name` | 宿主自己的 agent 名，仅宿主有 agent 概念时使用 |
+| `host-default` | 无附加字段 | 必须显式选择，宿主解析不了则拒绝启动 |
+| 旧 `capture.agent` | string | 映射为 agent target；与 `target` 同现视为冲突 |
+
+行为：`enabled=false` 允许无 target；生成失败不切换到其它目标；旧版直接 `agent` 配置在完成迁移前仍按 agent target 解释。
 
 ### MCP Adapter
 

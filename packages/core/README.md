@@ -39,7 +39,7 @@ const manager = createSqliteMemoryManager({ dbPath: '/tmp/memory.db' });
 
 Core 提供两个可复用服务，但**不会自行触发**：
 
-- `AutoCaptureService`：按准入矩阵逐单元路由（规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）。E1/S1/D1 直接以 `origin=agent`、`trust=low` 写入正式记忆；E2/S2/D2/C2 经 `beginCapture/completeCapture` 写入待审批候选；C1 仅在唯一匹配 `agent/low` 且旧值相符时走 CAS 更新；Q（纯问答对）与 N 丢弃。命中现有凭据规则时整条拒绝，不保证完整识别。
+- `AutoCaptureService`：按准入矩阵逐单元路由（规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）。E1/S1/D1 直接以 `origin=agent`、`trust=low` 写入正式记忆；E2/S2/D2/C2 经 `beginCapture/completeCapture` 写入待审批候选；C1 仅在唯一匹配 `agent/low` 且旧值相符时走 CAS 更新；Q（纯问答对）落低价值候选，N 丢弃；凭据命中片段脱敏后继续、整条仅凭据才放弃，不保证完整识别。
 - `AutoRecallService`：对调用方提供的 scope 列表逐一执行 FTS，合并去重后进行标题关键词准入与条目预算筛选；当前没有独立 tags 检索通道。
 
 调度、注入位置、缓存与开关都在 OpenCode v2 适配层（`packages/opencode/src/context/auto-memory.ts`）。

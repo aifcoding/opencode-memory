@@ -39,6 +39,9 @@ export interface AutoCandidate {
 
 export interface AutoCaptureInput {
   text: string;
+  /** 上一条用户消息（锚定在当前消息之前）。 */
+  previousUserText?: string;
+  /** 当前消息之前最近的一条助手回复。 */
   previousAssistantText?: string;
   scope: ScopeRef;
   now?: number;
@@ -85,6 +88,8 @@ export interface AutoRecallItem {
   title: string;
   summary: string;
   trust: string;
+  /** 自动采集产生的条目（召回行会标注来源）。 */
+  auto?: boolean;
 }
 
 export interface AutoRecallResult {

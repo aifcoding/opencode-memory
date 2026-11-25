@@ -120,6 +120,8 @@ export interface MemoryStore {
   completeCapture?(input: CompleteCaptureInput): CompleteCaptureResult;
   failCapture?(captureKey: string, leaseToken: string, errorCode: string): FailCaptureResult;
   listMemoryCandidates?(input: ListMemoryCandidatesInput): MemoryCandidate[];
+  /** 统计某 scope 自 since 起新增的候选（任意状态）。 */
+  countCandidatesSince?(scope: ScopeRef, since: number): number;
   readMemoryCandidate?(input: { id: number; scope: ScopeRef }): ReadMemoryCandidateResult;
   reviewMemoryCandidate?(input: {
     id: number;

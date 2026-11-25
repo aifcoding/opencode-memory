@@ -1,6 +1,6 @@
 {
   "name": "@aifcoding/opencode-memory",
-  "version": "2.4.0-rc.1",
+  "version": "2.4.0-rc.2",
   "description": "opencode 本地持久记忆插件",
   "type": "module",
   "main": "dist/plugin.js",
@@ -21,7 +21,7 @@
     "access": "public"
   },
   "dependencies": {
-    "@aifcoding/memory-core": "^0.5.0",
+    "@aifcoding/memory-core": "^0.5.1",
     "jsonc-parser": "^3.3.1",
     "zod": "4.1.8"
   },
@@ -33,7 +33,11 @@
   "scripts": {
     "test": "bun test tests",
     "typecheck": "tsc --noEmit",
-    "build": "bun build src/plugin.ts --outdir dist --target bun --external @aifcoding/memory-core --external jieba-wasm --external zod --external jsonc-parser",
-    "prepublishOnly": "bun run typecheck && bun test && bun run build"
+    "build": "bun build src/plugin.ts --outdir dist --target bun --external @aifcoding/memory-core --external jieba-wasm --external zod --external jsonc-parser && bun run build:cli",
+    "prepublishOnly": "bun run typecheck && bun test && bun run build",
+    "build:cli": "bun build src/cli.ts --outdir dist --target bun --external @aifcoding/memory-core --external bun:sqlite"
+  },
+  "bin": {
+    "memory-review": "./dist/cli.js"
   }
 }

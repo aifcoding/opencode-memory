@@ -420,3 +420,26 @@ query
 - opencode adapter：v1/v2 双入口加载、store/recall 往返、软删拒绝、pin 配额、v2 compaction.ended 桥接与幂等归档
 
 尚未自动覆盖：并发迁移/写入、overlay 消息结构、真实 OpenCode v1/v2 compaction 端到端、配置错误分支（部分运行时链路曾通过 spike 手动验证）。
+
+## 通用 LLM 提取管线（设计已定）
+
+目标：宿主只做适配或改配置即可复用同一套提取管线。当前状态：**阶段 ①（类型与启动校验）已实现**，编排、安全管线、生成器与各宿主 adapter 未实现。
+
+### 分层
+
+| 层 | 职责 | 状态 |
+|---|---|---|
+| `core/domain/extraction.ts` | target 联合类型、来源类型、启动期校验 | 已实现 |
+| `core/ports/{TextGenerator,ConversationSource}.ts` | 生成端口、历史快照端口 | 规划 |
+| `core/application/ExtractionService.ts` | 固定安全顺序 + 候选提交 | 规划 |
+| `core/extraction/{safety,budget,prompt,schema}.ts` | 凭据扫描、预算、提示词、输出校验 | 规划 |
+| `packages/generators` | 首个公共模型生成器（openai-compatible） | 规划 |
+| 宿主 adapter | 历史读取、target 解析、子会话/工具/事件、scope | 各自实现 |
+
+### 约束
+
+- `capture.target` 互斥三选一（model / agent / host-default），`enabled=true` 无 target → 拒绝启动；运行失败不换目标；
+- 生成前固定顺序：来源筛选 → 本地凭据扫描 → 预算裁剪 → 最终载荷扫描 → 生成 → JSON/schema 校验 → 写 pending 候选；
+- 来源分 `host-transcript` 与 `model-report`；`memory_extract(text)` 只产 `model-report` 低信任候选，参数不得覆盖 role/trust/scope/target；
+- pending 永不参与召回；**批准后允许召回并标注来源**；
+- hook 时序、工具注册、model/agent 解析、子会话与 scope 映射保持宿主专有。

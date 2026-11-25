@@ -132,6 +132,8 @@ function jsonSchema(schema: z.ZodObject<z.ZodRawShape>) {
 export async function v2Setup(ctx: V2Context) {
   const messageCache = new Map<string, any[]>();
   const captureSessions = new Set<string>();
+  // 待审候选提示：同一会话同一数量只提示一次，避免每轮刷屏。
+  const pendingNotice = new Map<string, number>();
   const input = {
     client: createV2Client(ctx, messageCache, captureSessions),
   } as unknown as PluginInput;
@@ -213,6 +215,20 @@ export async function v2Setup(ctx: V2Context) {
         });
         if (outcome.inject) {
           event.messages.push({ role: 'user', content: [{ type: 'text', text: outcome.inject }] });
+        }
+        if (outcome.pending === 0) {
+          pendingNotice.delete(event.sessionID);
+        } else if (pendingNotice.get(event.sessionID) !== outcome.pending) {
+          pendingNotice.set(event.sessionID, outcome.pending);
+          event.messages.push({
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `<mem_block role="reference" source="memory-pending">有 ${outcome.pendingCapped ? '至少 ' : ''}${outcome.pending} 条候选记忆待审批：终端运行 memory-review --list 查看，memory-review --approve 1,2 或 --reject 3 处理；也可让助手调用 memory_candidates。候选未批准前不参与召回。</mem_block>`,
+              },
+            ],
+          });
         }
       } catch (error) {
         console.error('[opencode-memory] auto memory failed', error);

@@ -1,4 +1,5 @@
 import { test, expect, beforeEach, afterEach } from 'bun:test';
+import { redactCaptureMaterial } from '../src/capture/filter';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -492,4 +493,54 @@ test('capture and recall switches are independent', async () => {
   expect(captured.captured).toBe(1);
   expect(captured.inject).toBeUndefined();
   expect(await manager.listMemories({ scope })).toHaveLength(1);
+});
+
+
+test('reports pending candidates without injecting their content', async () => {
+  await manager.beginCapture({
+    contextKey: 'ses_pending',
+    sourceId: 'msg-1',
+    trigger: 'manual',
+    extractorVersion: 'test',
+    scope,
+  }).then(async (begun) => {
+    if (begun.status !== 'started') return;
+    await manager.completeCapture({
+      captureKey: begun.captureKey,
+      leaseToken: begun.leaseToken,
+      candidates: [
+        {
+          title: '待审候选标题',
+          content: '候选正文不应出现在注入块里',
+          summary: '摘要',
+          type: 'fact',
+          suggestedDomain: 'code',
+        },
+      ],
+    });
+  });
+
+  const result = await runAutoMemory({
+    manager,
+    config: { ...config, capture: { ...config.capture, enabled: false } },
+    scope,
+    sessionID: 'ses_pending_read',
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }],
+  });
+
+  expect(result.pending).toBe(1);
+  expect(result.inject ?? '').not.toContain('候选正文不应出现在注入块里');
+});
+
+test('credential material is redacted instead of dropping the whole extraction', () => {
+  const material = redactCaptureMaterial([
+    { id: 'm1', role: 'user', text: 'atlas 路径 /srv/atlas，password=abc123' },
+    { id: 'm2', role: 'user', text: '密码是 123456' },
+    { id: 'm3', role: 'user', text: '密码走环境变量' },
+  ]);
+  expect(material.redacted).toBeGreaterThanOrEqual(2);
+  expect(material.messages[0]!.text).toContain('/srv/atlas');
+  expect(material.messages[0]!.text).not.toContain('abc123');
+  expect(material.messages[0]!.text).toContain('[REDACTED]');
+  expect(material.messages[2]!.text).toBe('密码走环境变量');
 });

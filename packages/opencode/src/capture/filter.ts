@@ -1,3 +1,5 @@
+import { redactCredentialText } from '@aifcoding/memory-core';
+
 export interface CaptureMessage {
   id: string;
   role: 'user' | 'assistant';
@@ -22,4 +24,18 @@ export function filterCaptureMessages(messages: RawCaptureMessage[]): CaptureMes
         : [],
     );
   });
+}
+
+/** 发送给模型之前按消息脱敏；返回脱敏后的材料与命中计数。 */
+export function redactCaptureMaterial(messages: CaptureMessage[]): {
+  messages: CaptureMessage[];
+  redacted: number;
+} {
+  let redacted = 0;
+  const cleaned = messages.map((message) => {
+    const result = redactCredentialText(message.text);
+    redacted += result.hits;
+    return { ...message, text: result.text };
+  });
+  return { messages: cleaned, redacted };
 }

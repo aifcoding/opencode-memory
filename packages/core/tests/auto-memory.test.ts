@@ -7,6 +7,7 @@ import { MemoryManager } from '../src/application/MemoryManager';
 import { SqliteMemoryStore } from '../src/sqlite/SqliteMemoryStore';
 import {
   AutoCaptureService,
+  redactCredentialText,
   extractCandidates,
   hasCredential,
   isReferenceRequest,
@@ -322,42 +323,25 @@ test('detects reference requests', () => {
   expect(isReferenceRequest('帮我改一下这个函数')).toBe(false);
 });
 
-test('Q short replies never persist in either store', async () => {
-  const qa = routeText({
-    text: '深蓝色',
-    previousAssistantText: '主题颜色是什么？',
-    scope,
-  });
-  expect(qa.rules).toEqual({ Q: 1 });
-  expect(qa.direct).toHaveLength(0);
-  expect(qa.pending).toHaveLength(0);
-
+test('Q short replies are kept as candidates instead of formal memories', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  for (const text of ['深蓝色', '推', 'md格式不对啊']) {
-    const routed = routeText({
-      text,
-      previousAssistantText: '主题颜色是什么？',
-      scope,
-    });
-    expect({ text, direct: routed.direct.length, pending: routed.pending.length }).toEqual({
-      text,
-      direct: 0,
-      pending: 0,
-    });
+  // 「推」只有 1 个字符，连单元门槛都不到；其余两个短回复应保留为候选。
+  for (const text of ['深蓝色', 'md格式不对啊']) {
+    const routed = routeText({ text, previousAssistantText: '主题颜色是什么？', scope });
+    expect({ text, direct: routed.direct.length }).toEqual({ text, direct: 0 });
+    expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 1 });
     const result = await service.capture({
       text,
       previousAssistantText: '主题颜色是什么？',
       scope,
     });
-    expect({
-      text,
-      written: result.written,
-      updated: result.updated,
-      pendingCreated: result.pendingCreated,
-    }).toEqual({ text, written: 0, updated: 0, pendingCreated: 0 });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
+    expect({ text, pendingCreated: result.pendingCreated }).toEqual({ text, pendingCreated: 1 });
   }
+  const tooShort = routeText({ text: '推', previousAssistantText: '主题颜色是什么？', scope });
+  expect(tooShort.pending).toHaveLength(0);
   expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+  expect((await manager.listMemoryCandidates({ scope })).length).toBe(2);
 });
 
 test('renders within the exact character budget', async () => {
@@ -425,63 +409,17 @@ test('same title inside one message does not duplicate', async () => {
   expect(candidates[0]!.content).toContain('18091');
 });
 
-test('rejects the entire message when any sentence contains credentials', async () => {
+test('credential spans are redacted and the rest of the message is kept', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const cases = [
-    { rule: 'assignment', credential: 'password=abc123', position: 'first' },
-    { rule: 'userinfo-url', credential: 'mysql://root:secret@10.0.0.5:3306/db', position: 'last' },
-    { rule: 'api-token', credential: 'sk-abcdefghijklmnopqrstuvwx1234', position: 'first' },
-    {
-      rule: 'base64',
-      credential: 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2',
-      position: 'last',
-    },
-  ] as const;
-
-  for (const [index, item] of cases.entries()) {
-    const normal = `记住 probe-secret-${index} 地址 http://127.0.0.1:${18100 + index}`;
-    const normalCandidates = extractCandidates({ text: normal, scope });
-    expect({ rule: item.rule, normalCandidates: normalCandidates.length }).toEqual({
-      rule: item.rule,
-      normalCandidates: 1,
-    });
-    const title = normalCandidates[0]!.title;
-    await manager.storeMemory({
-      title,
-      content: `baseline-content-${index}`,
-      summary: `baseline-summary-${index}`,
-      scope,
-      origin: 'agent',
-      trust: 'low',
-    });
-    const before = (await manager.listMemories({ scope })).map(snapshotOf);
-    const beforeCandidates = (await manager.listMemoryCandidates({ scope })).map((item) => item.id);
-    const text =
-      item.position === 'first' ? `${item.credential}。${normal}` : `${normal}。${item.credential}`;
-
-    expect({ rule: item.rule, candidates: extractCandidates({ text, scope }).length }).toEqual({
-      rule: item.rule,
-      candidates: 0,
-    });
-    const result = await service.capture({ text, scope });
-    expect({ rule: item.rule, written: result.written, updated: result.updated }).toEqual({
-      rule: item.rule,
-      written: 0,
-      updated: 0,
-    });
-    expect({ rule: item.rule, pendingCreated: result.pendingCreated }).toEqual({
-      rule: item.rule,
-      pendingCreated: 0,
-    });
-    expect({ rule: item.rule, memories: (await manager.listMemories({ scope })).map(snapshotOf) }).toEqual({
-      rule: item.rule,
-      memories: before,
-    });
-    expect({
-      rule: item.rule,
-      candidates: (await manager.listMemoryCandidates({ scope })).map((item) => item.id),
-    }).toEqual({ rule: item.rule, candidates: beforeCandidates });
-  }
+  const result = await service.capture({
+    text: '记住 probe-secret-0 地址 http://127.0.0.1:18100，password=abc123',
+    scope,
+  });
+  expect(result.written).toBe(1);
+  const [entry] = await manager.listMemories({ scope });
+  expect(entry!.content).not.toContain('abc123');
+  expect(entry!.content).toContain('[REDACTED]');
+  expect(entry!.content).toContain('18100');
 });
 
 test('never overwrites user or high-trust memories that share the candidate title', async () => {
@@ -767,7 +705,7 @@ test('S1 negatives never write direct memories', async () => {
     '看看 https://example.org 怎么打不开',
     '如果升级到 1.2.3 会怎样？',
     'app.port=65536',
-    '服务地址是 https://example.org',
+    '示例地址是 https://example.org',
   ];
   for (const text of cases) {
     const routed = routeText({ text, scope });
@@ -1279,33 +1217,10 @@ test('re-capturing identical text is idempotent and keeps the revision', async (
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('N plain conversation is dropped from both stores', async () => {
+test('plain conversation without qa context is dropped from both stores', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const question = 'md 里要写哪些内容？';
-  for (const text of ['好的', '你再看看', 'md格式不对啊']) {
-    const routed = routeText({ text, previousAssistantText: question, scope });
-    expect({ text, direct: routed.direct.length, pending: routed.pending.length }).toEqual({
-      text,
-      direct: 0,
-      pending: 0,
-    });
-    const result = await service.capture({ text, previousAssistantText: question, scope });
-    expect({
-      text,
-      written: result.written,
-      updated: result.updated,
-      pendingCreated: result.pendingCreated,
-    }).toEqual({ text, written: 0, updated: 0, pendingCreated: 0 });
-  }
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('E1 deictic bodies are dropped from both stores', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  for (const text of ['记住这个', '记住，我们刚才说的那个']) {
+  for (const text of ['好的', '你再看看']) {
     const routed = routeText({ text, scope });
-    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
     expect({ text, direct: routed.direct.length, pending: routed.pending.length }).toEqual({
       text,
       direct: 0,
@@ -1320,6 +1235,225 @@ test('E1 deictic bodies are dropped from both stores', async () => {
   }
   expect(await manager.listMemories({ scope })).toHaveLength(0);
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('deictic_save_creates_pending', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住这个';
+  const previousAssistantText = '数据库连接串是 postgres://a/b';
+
+  const routed = routeText({ text, previousAssistantText, scope });
+  expect(routed.rules).toEqual({ E2: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(1);
+  expect(routed.pending[0]!.reason).toBe('deictic reference needs clarification');
+
+  const result = await service.capture({ text, previousAssistantText, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  const candidates = await manager.listMemoryCandidates({ scope });
+  expect(candidates).toHaveLength(1);
+  const candidate = candidates[0]!;
+  expect(candidate.status).toBe('pending');
+  expect(candidate.title).toContain('待澄清保存');
+  expect(candidate.content).toContain('指代未解析');
+  expect(candidate.content).toContain('助手前文');
+  expect(candidate.content).toContain(previousAssistantText);
+  expect(candidate.tags).toEqual(expect.arrayContaining(['auto:deictic', 'auto:rule:E2']));
+});
+
+test('deictic_uses_previous_user_text', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住这个';
+  const previousUserText = '发布流程改成先跑 e2e';
+
+  const result = await service.capture({ text, previousUserText, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  const candidates = await manager.listMemoryCandidates({ scope });
+  expect(candidates).toHaveLength(1);
+  expect(candidates[0]!.content).toContain('用户前文');
+  expect(candidates[0]!.content).toContain(previousUserText);
+  expect(candidates[0]!.content).toContain('助手前文：（无）');
+});
+
+test('deictic_without_context_is_dropped', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['记住这个', '记住，我们刚才说的那个']) {
+    const routed = routeText({ text, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
+    expect({ text, direct: routed.direct.length }).toEqual({ text, direct: 0 });
+    expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 0 });
+    expect({ text, reason: routed.dropped[0]!.reason }).toEqual({
+      text,
+      reason: 'deictic without context',
+    });
+
+    const result = await service.capture({ text, scope });
+    expect({
+      text,
+      written: result.written,
+      updated: result.updated,
+      pendingCreated: result.pendingCreated,
+    }).toEqual({ text, written: 0, updated: 0, pendingCreated: 0 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('self_contained_demonstrative_uses_e1', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住这个方案以后都按先 e2e 再发布的方式走';
+
+  const routed = routeText({ text, scope });
+  expect(routed.rules).toEqual({ E1: 1 });
+  expect(routed.direct).toHaveLength(1);
+  expect(routed.pending).toHaveLength(0);
+
+  const result = await service.capture({ text, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('这个方案以后都按先 e2e 再发布的方式走');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('deictic_context_is_clipped', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const previousUserText = '用'.repeat(320);
+  const previousAssistantText = '助'.repeat(340);
+
+  const result = await service.capture({
+    text: '记住这个',
+    previousUserText,
+    previousAssistantText,
+    scope,
+  });
+  expect(result.pendingCreated).toBe(1);
+
+  const [candidate] = await manager.listMemoryCandidates({ scope });
+  expect(candidate).toBeDefined();
+  const clippedSuffix = '…（已截断）';
+  const lines = candidate!.content.split('\n');
+  const userLine = lines.find((line) => line.startsWith('用户前文：'));
+  const assistantLine = lines.find((line) => line.startsWith('助手前文：'));
+  expect(userLine).toBe(`用户前文：${'用'.repeat(200)}${clippedSuffix}`);
+  expect(assistantLine).toBe(`助手前文：${'助'.repeat(200)}${clippedSuffix}`);
+  expect(candidate!.content).toContain('已截断');
+  expect(userLine!.length).toBeLessThanOrEqual('用户前文：'.length + 200 + clippedSuffix.length);
+  expect(assistantLine!.length).toBeLessThanOrEqual(
+    '助手前文：'.length + 200 + clippedSuffix.length,
+  );
+});
+
+test('chinese credential-only saves are dropped', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const texts = ['记住：密码是 abc123', '记住：口令为 xyz', '记住：api密钥是 k-1'];
+
+  for (const text of texts) {
+    expect({ text, credential: hasCredential(text) }).toEqual({ text, credential: true });
+    const routed = routeText({ text, scope });
+    expect({ text, direct: routed.direct.length, pending: routed.pending.length }).toEqual({
+      text,
+      direct: 0,
+      pending: 0,
+    });
+    const result = await service.capture({ text, scope });
+    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
+      text,
+      written: 0,
+      pendingCreated: 0,
+    });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('credential_policy_without_value_is_allowed', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const texts = ['记住：密码走环境变量', '记住：不要把密码写进日志'];
+
+  for (const text of texts) {
+    expect({ text, credential: hasCredential(text) }).toEqual({ text, credential: false });
+    const routed = routeText({ text, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { E1: 1 } });
+    const result = await service.capture({ text, scope });
+    expect({
+      text,
+      written: result.written,
+      updated: result.updated,
+      pendingCreated: result.pendingCreated,
+    }).toEqual({ text, written: 1, updated: 0, pendingCreated: 0 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(2);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('credential_in_referenced_context_blocks_deictic', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住这个';
+  const previousAssistantText = '密码是 abc123';
+
+  const routed = routeText({ text, previousAssistantText, scope });
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.dropped[0]!.reason).toBe('credential in referenced context');
+
+  const result = await service.capture({ text, previousAssistantText, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('same_deictic_words_with_different_context_are_distinct', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const firstContext = '数据库连接串是 postgres://a/b';
+  const secondContext = '发布流程改成先跑 e2e';
+
+  const first = await service.capture({
+    text: '记住这个',
+    previousAssistantText: firstContext,
+    scope,
+  });
+  const second = await service.capture({
+    text: '记住这个',
+    previousAssistantText: secondContext,
+    scope,
+  });
+  expect({ written: first.written, pendingCreated: first.pendingCreated }).toEqual({
+    written: 0,
+    pendingCreated: 1,
+  });
+  expect({ written: second.written, pendingCreated: second.pendingCreated }).toEqual({
+    written: 0,
+    pendingCreated: 1,
+  });
+
+  const candidates = await manager.listMemoryCandidates({ scope });
+  expect(candidates).toHaveLength(2);
+  expect(candidates[0]!.captureKey).not.toBe(candidates[1]!.captureKey);
+  expect(candidates[0]!.title).not.toBe(candidates[1]!.title);
+  const contents = candidates.map((candidate) => candidate.content).join('\n');
+  expect(contents).toContain(firstContext);
+  expect(contents).toContain(secondContext);
 });
 
 test('E1 negated saves are dropped from both stores', async () => {
@@ -1471,7 +1605,7 @@ test('a field-less correction never updates an existing target', async () => {
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
 });
 
-test('broad auto titles are not injected by auto recall', async () => {
+test('broad auto titles are ranked last and labelled', async () => {
   const broad = await manager.storeMemory({
     title: 'push',
     content: 'push 通知配置记录',
@@ -1492,22 +1626,180 @@ test('broad auto titles are not injected by auto recall', async () => {
   });
 
   const recall = new AutoRecallService(manager);
-  const broadResult = await recall.recall({
+  const result = await recall.recall({
     query: 'push 通知',
     scopes: [scope],
     excludeIds: [],
     maxItems: 3,
     maxCharacters: 300,
   });
-  expect(broadResult.items).toHaveLength(0);
-  expect(broadResult.skipped).toContain(`auto title too broad: ${broad.id}`);
+  expect(result.items.map((item) => item.id)).toContain(broad.id);
+  expect(result.items[0]!.auto).toBe(true);
+  expect(result.text).toContain('自动');
+  expect(result.skipped.join(',')).toContain('ranked last');
+});
 
-  const specific = await recall.recall({
-    query: 'redis endpoint',
-    scopes: [scope],
-    excludeIds: [],
-    maxItems: 3,
-    maxCharacters: 300,
+test('inline save after a comma is captured', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const result = await service.capture({
+    text: '这是路由系统啊，记住要连 agentportalDb',
+    scope,
   });
-  expect(specific.items.map((item) => item.title)).toEqual(['staging.redis.endpoint']);
+  expect(result.written).toBe(1);
+  const [entry] = await manager.listMemories({ scope });
+  expect(entry?.title).toContain('agentportaldb');
+});
+
+test('inline save with a deictic body is still dropped', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const result = await service.capture({ text: '这是路由系统啊，记住这个', scope });
+  expect(result.written).toBe(0);
+  expect(result.pendingCreated).toBe(0);
+});
+
+test('correction with a comma is not split by the inline save rule', () => {
+  const routed = routeText({ text: '不是蓝色，是绿色', scope });
+  expect(routed.direct.filter((unit) => unit.rule === 'C1')).toHaveLength(0);
+  expect(routed.rules.N ?? 0).toBe(0);
+});
+
+
+test('generic entity with an objective value is written directly', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const cases = [
+    '仓库地址是 /Users/gaosper/Documents/code/kit',
+    'kit 仓库地址是 /Users/gaosper/Documents/code/kit',
+    '服务地址是 https://example.org',
+  ];
+  for (const text of cases) {
+    const routed = routeText({ text, scope });
+    expect({ text, direct: routed.direct.length }).toEqual({ text, direct: 1 });
+  }
+  for (const text of cases) {
+    const result = await service.capture({ text, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 1 });
+  }
+  expect((await manager.listMemories({ scope })).length).toBeGreaterThanOrEqual(3);
+});
+
+test('binding ending with a question mark is not written directly', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const routed = routeText({ text: '服务地址是 https://example.org？', scope });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(1);
+  const result = await service.capture({ text: '服务地址是 https://example.org？', scope });
+  expect(result.written).toBe(0);
+});
+
+test('long spoken reference is treated as deictic, not a direct save', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住我们刚才讨论的那个方案';
+  const withoutContext = routeText({ text, scope });
+  expect(withoutContext.direct).toHaveLength(0);
+  expect(withoutContext.rules.N).toBe(1);
+
+  const withContext = routeText({ text, scope, previousAssistantText: '方案是先用 SQLite 存候选' });
+  expect(withContext.direct).toHaveLength(0);
+  expect(withContext.pending).toHaveLength(1);
+  const result = await service.capture({
+    text,
+    scope,
+    previousAssistantText: '方案是先用 SQLite 存候选',
+  });
+  expect(result.written).toBe(0);
+  expect(result.pendingCreated).toBe(1);
+});
+
+test('C1 requires the target to match the corrected field', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const seeded = await service.capture({ text: '记住：redis.endpoint=redis.internal:6379', scope });
+  expect(seeded.written).toBe(1);
+  const [entry] = await manager.listMemories({ scope });
+  const before = entry!.content;
+
+  const result = await service.capture({ text: 'redis 端口改成 6380', scope });
+  expect(result.updated).toBe(0);
+  expect(result.pendingCreated).toBeGreaterThanOrEqual(1);
+  const [after] = await manager.listMemories({ scope });
+  expect(after!.content).toBe(before);
+  expect(after!.revision).toBe(entry!.revision);
+});
+
+test('a user question is not captured as a qa candidate', () => {
+  const routed = routeText({
+    text: '主题颜色是什么？',
+    previousAssistantText: '你可以再确认一下颜色吗？',
+    scope,
+  });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+});
+
+test('credential placeholder whitelist requires the whole value', () => {
+  expect(redactCredentialText('password=环境变量').hits).toBe(0);
+  const bypass = redactCredentialText('password=环境变量abc');
+  expect(bypass.hits).toBe(1);
+  expect(bypass.text).not.toContain('abc');
+});
+
+test('overflow units stay as candidates when direct writes fill the cap', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const result = await service.capture({
+    text: 'aa.port=1；bb.port=2；cc.port=3；dd.port=4',
+    scope,
+  });
+  expect(result.written).toBe(3);
+  expect(result.pendingCreated).toBe(1);
+});
+
+test('qa filler replies are not kept as candidates', () => {
+  for (const text of ['好的', '你再看看', '怎么处理']) {
+    const routed = routeText({ text, previousAssistantText: '还需要我做什么？', scope });
+    expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 0 });
+  }
+});
+
+test('authorization, bearer, jwt and pem credentials are detected and redacted', () => {
+  const samples = [
+    'Authorization: Bearer abcdefghijklmnopqrstuvwx',
+    'Bearer abcdefghijklmnopqrstuvwx1234',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+    '-----BEGIN RSA PRIVATE KEY-----',
+  ];
+  for (const sample of samples) {
+    expect({ sample, hit: hasCredential(sample) }).toEqual({ sample, hit: true });
+    const redacted = redactCredentialText(sample);
+    expect({ sample, hits: redacted.hits > 0 }).toEqual({ sample, hits: true });
+  }
+});
+
+test('overflow keeps five candidates when eight bindings arrive at once', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const result = await service.capture({
+    text: 'aa.port=1；bb.port=2；cc.port=3；dd.port=4；ee.port=5；ff.port=6；gg.port=7；hh.port=8',
+    scope,
+  });
+  expect(result.written).toBe(3);
+  expect(result.pendingCreated).toBe(5);
+});
+
+test('PEM blocks are redacted as a whole, not just the header', () => {
+  const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretbody1234\n-----END RSA PRIVATE KEY-----';
+  expect(hasCredential(pem)).toBe(true);
+  const redacted = redactCredentialText(pem);
+  expect(redacted.hits).toBeGreaterThan(0);
+  expect(redacted.text).not.toContain('MIIEow');
+});
+
+test('residual scan respects the placeholder whitelist', () => {
+  const payload = JSON.stringify([{ text: 'password=环境变量' }]);
+  expect(redactCredentialText(payload).hits).toBe(0);
+});
+
+test('concurrent captures never exceed the daily candidate cap', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const texts = Array.from({ length: 21 }, (_, index) => `服务地址是 https://example.org/${index}？`);
+  const results = await Promise.all(texts.map((text) => service.capture({ text, scope })));
+  const created = results.reduce((total, result) => total + result.pendingCreated, 0);
+  expect(created).toBeLessThanOrEqual(20);
 });

@@ -70,11 +70,22 @@ Recall 分层召回配置（可选，走默认值即可）：
 } }] }
 ```
 
-- `autoCapture`：按准入矩阵逐单元判定。E1 明确保存、S1 完整配置绑定、D1 明确选型直接写入低信任记忆（`origin=agent`、`trust=low`）；E2/S2/D2/C2 只写入 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时更新；纯问答对（Q）与无有效单元（N）丢弃。`shadow` 只计算不写任何表，仍推进会话游标。
+- `autoCapture`：按准入矩阵逐单元判定。E1 明确保存、S1 完整配置绑定、D1 明确选型直接写入低信任记忆（`origin=agent`、`trust=low`）；E2/S2/D2/C2 只写入 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时更新；问答对（Q）落低价值候选，无有效单元（N）丢弃。`shadow` 只计算不写任何表，仍推进会话游标。
 - 未审批候选不在 `memories` 表，召回与 `memory_recall` 都不会返回。
 - `autoRecall`：`auto` 检索并注入摘要（统一 `global/default`、FTS + 标题准入、预算含围栏），`hint` 只注入固定检索提示，`shadow` 不检索不注入。
-- 限流：单条消息最多 3 条（直写 + 候选合计），同一 scope 每日最多 20 条新增待审候选；14 天过期未实现。
+- 限流：单条消息最多 3 条直写、6 条候选，同一 scope 每日最多 20 条新增待审候选；14 天过期未实现。
 - 自动写入不会覆盖人工或高信任记忆；凭据过滤只拒绝命中现有规则的输入，不是完整安全保证。
+
+
+待审候选的终端入口（与插件共享同一个数据库，任何宿主可用）：
+
+```bash
+memory-review --list                      # 列出待审候选
+memory-review --approve 1,2               # 批准
+memory-review --reject 3                  # 拒绝
+memory-review --all-approve               # 全部批准（谨慎）
+memory-review --db /abs/memory.db --scope default
+```
 
 更多功能、配置和工具说明见仓库根目录的 [`README.md`](https://github.com/aifcoding/opencode-memory/blob/main/README.md) 和 [`docs/CONFIGURATION.md`](https://github.com/aifcoding/opencode-memory/blob/main/docs/CONFIGURATION.md)。
 

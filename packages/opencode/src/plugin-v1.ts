@@ -8,7 +8,9 @@ import type { Trust } from '@aifcoding/memory-core';
 import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
 import { CAPTURE_PROMPT } from './capture/prompt';
 import { captureOutputSchema } from './capture/schema';
-import { filterCaptureMessages, type RawCaptureMessage } from './capture/filter';
+import { redactCredentialText } from '@aifcoding/memory-core';
+import { filterCaptureMessages, redactCaptureMaterial, type RawCaptureMessage } from './capture/filter';
+import { validateCaptureCandidates } from './capture/validate';
 import { CAPTURE_EXTRACTOR_VERSION } from './capture/extractor';
 import { suggestedDomainHint } from './capture/hint';
 import { checkAndRefresh } from './self-update';
@@ -87,7 +89,7 @@ async function captureSession(
   sessionId: string,
   sourceId: string,
   trigger: 'compaction' | 'manual',
-  agent: string,
+  agent: string | undefined,
   maxCandidates: number,
 ): Promise<string> {
   if (!client) return '无法提取：OpenCode client 不可用。';
@@ -103,7 +105,49 @@ async function captureSession(
   try {
     const response = await client.session.messages({ path: { id: sessionId } });
     const messages = ((response as any)?.data ?? []) as RawCaptureMessage[];
-    const filtered = filterCaptureMessages(messages);
+    const filteredRaw = filterCaptureMessages(messages);
+    const redacted = redactCaptureMaterial(filteredRaw);
+    let filtered = redacted.messages.filter((message) => message.text && message.text !== '[REDACTED]');
+    // 材料预算：超限时保留最近消息，并显式标注已裁剪。
+    const MAX_MATERIAL_CHARS = 200_000;
+    if (JSON.stringify(filtered).length > MAX_MATERIAL_CHARS) {
+      let total = 0;
+      const kept: typeof filtered = [];
+      for (let index = filtered.length - 1; index >= 0; index -= 1) {
+        const message = filtered[index]!;
+        total += message.text.length;
+        if (total > MAX_MATERIAL_CHARS) break;
+        kept.unshift(message);
+      }
+      filtered = kept;
+      if (filtered.length > 0) {
+        filtered = [
+          { id: 'trimmed', role: 'user', text: '（更早的材料已裁剪：仅保留最近内容）' },
+          ...filtered,
+        ];
+      }
+    }
+    if (filtered.length === 0) {
+      await manager.failCapture({
+        captureKey: begun.captureKey,
+        leaseToken: begun.leaseToken,
+        errorCode: 'credential_material_only',
+      });
+      return '提取已取消：可用材料全部为敏感内容。';
+    }
+    if (redacted.redacted > 0) {
+      logError(client, `capture material redacted: ${redacted.redacted} span(s)`, undefined);
+    }
+    // 脱敏后再做一次残留检测：任何规则漏网都拒绝发送（fail-closed）。
+    // 用与脱敏相同的规则判定残留：占位符（password=环境变量）不会被误判。
+    if (redactCredentialText(filtered.map((message) => message.text).join('\n')).hits > 0) {
+      await manager.failCapture({
+        captureKey: begun.captureKey,
+        leaseToken: begun.leaseToken,
+        errorCode: 'credential_residual',
+      });
+      return '提取已取消：脱敏后仍检测到疑似凭据，未发送给模型。';
+    }
     // Use a fresh session rather than fork: fork inherits history and defeats recursion filtering.
     const fresh = await client.session.create();
     childId = (fresh as any)?.data?.id ?? (fresh as any)?.id;
@@ -111,7 +155,8 @@ async function captureSession(
     const prompt = await client.session.prompt({
       path: { id: childId },
       body: {
-        agent,
+        // 未配置 agent 时使用宿主默认模型；配置了就切到该 agent。
+        ...(agent ? { agent } : {}),
         parts: [
           {
             type: 'text',
@@ -125,10 +170,15 @@ async function captureSession(
     )?.text;
     if (!text) throw new Error('extractor returned no text');
     const output = captureOutputSchema(maxCandidates).parse(JSON.parse(text));
+    const materialText = filtered.map((message) => message.text).join('\n');
+    const validated = validateCaptureCandidates(output.candidates, materialText, maxCandidates);
+    if (validated.filtered.length > 0) {
+      logError(client, `capture candidates filtered: ${validated.filtered.join(', ')}`, undefined);
+    }
     const completed = await manager.completeCapture({
       captureKey: begun.captureKey,
       leaseToken: begun.leaseToken,
-      candidates: output.candidates.slice(0, maxCandidates),
+      candidates: validated.candidates,
     });
     return `已生成 ${completed.candidateCount} 条候选记忆（过滤 ${completed.filteredCount} 条），请使用 memory_candidates 审批。`;
   } catch (error) {
@@ -251,9 +301,8 @@ export const v1Plugin: Plugin = async (
       `[opencode-memory] invalid config: ${config.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`,
     );
   }
-  if (config.data.capture?.enabled && !config.data.capture.agent) {
-    throw new Error('[opencode-memory] capture.agent is required when capture.enabled=true');
-  }
+  // capture.agent 可选：缺省时使用宿主默认模型（临时子会话直接生成）。
+
   const dbPath = config.data.dbPath ?? defaultDbPath();
   const pinQuota = config.data.pinQuota ?? DEFAULT_PIN_QUOTA;
   if (config.data.autoUpdate) {
@@ -282,7 +331,7 @@ export const v1Plugin: Plugin = async (
         description: '从当前会话提取待审批的候选记忆（默认关闭）。',
         args: {},
         async execute(_args: {}, context: ToolContext) {
-          if (!capture.enabled || !capture.agent) return '未启用安全辅助记忆提取。';
+          if (!capture.enabled) return '未启用安全辅助记忆提取。';
           return captureSession(
             client,
             manager,
@@ -381,6 +430,54 @@ export const v1Plugin: Plugin = async (
             tags: args.tags,
           });
           return `已记住 (id=${memory.id}) ${memory.title}`;
+        },
+      },
+
+      memory_update: {
+        description:
+          '按 id 更新已有记忆的标题/正文/摘要/标签/类型。保留 id、pin 状态、来源与信任等级；正文或标题变化会递增 revision，仅元数据变化不递增。可传 expectedRevision 做乐观并发校验。',
+        args: {
+          id: z.number().int().positive().describe('记忆 id'),
+          title: z.string().min(1).max(200).optional().describe('新标题'),
+          content: z.string().min(1).max(50000).optional().describe('新正文'),
+          summary: z.string().max(500).optional().describe('新摘要'),
+          tags: z.array(z.string().min(1)).max(20).optional().describe('新标签（整体替换）'),
+          type: z
+            .enum(['preference', 'fact', 'decision', 'solution', 'convention'])
+            .optional()
+            .describe('新类型'),
+          expectedRevision: z
+            .number()
+            .int()
+            .positive()
+            .optional()
+            .describe('期望的当前 revision；不一致返回冲突'),
+        },
+        async execute(args: {
+          id: number;
+          title?: string;
+          content?: string;
+          summary?: string;
+          tags?: string[];
+          type?: 'preference' | 'fact' | 'decision' | 'solution' | 'convention';
+          expectedRevision?: number;
+        }) {
+          const result = await manager.updateMemory({
+            id: args.id,
+            title: args.title,
+            content: args.content,
+            summary: args.summary,
+            tags: args.tags,
+            type: args.type,
+            expectedRevision: args.expectedRevision,
+            scope: DEFAULT_MEMORY_SCOPE,
+          });
+          if (result.status === 'not_found') return `未找到 id=${args.id}`;
+          if (result.status === 'conflict') {
+            return `更新冲突（id=${args.id}）：当前 revision=${result.memory?.revision ?? '?'}，请重新读取后再更新`;
+          }
+          if (result.status === 'unchanged') return `内容未变化 (id=${args.id})`;
+          return `已更新 (id=${args.id}, revision=${result.memory?.revision ?? '?'}) ${result.memory?.title ?? ''}`;
         },
       },
 
@@ -702,7 +799,7 @@ export const v1Plugin: Plugin = async (
                 logError(client, 'Session summary archive failed', error);
                 continue;
               }
-              if (capture.enabled && capture.onCompaction && capture.agent) {
+              if (capture.enabled && capture.onCompaction) {
                 try {
                   await captureSession(
                     client,

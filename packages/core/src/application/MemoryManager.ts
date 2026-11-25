@@ -157,6 +157,92 @@ export class MemoryManager {
     const withSummary = this.store.updateMeta(input.id, { summary: input.summary });
     return { memory: withSummary ?? result.memory, conflict: false };
   }
+  /**
+   * 按 id 部分更新已有记忆：只改传入字段，保留 id、origin、trust、pin 与 createdAt。
+   * 正文或标题变化走 CAS（revision+1）；仅元数据变化不递增 revision。
+   */
+  async updateMemory(input: {
+    id: number;
+    title?: string;
+    content?: string;
+    summary?: string;
+    tags?: string[];
+    type?: MemoryType;
+    expectedRevision?: number;
+    scope?: ScopeRef;
+  }): Promise<{
+    status: 'updated' | 'unchanged' | 'conflict' | 'not_found';
+    memory?: MemoryEntry;
+  }> {
+    if (!Number.isInteger(input.id) || input.id <= 0) {
+      throw new MemoryValidationError('id must be a positive integer');
+    }
+    if (input.content !== undefined) this.nonEmpty(input.content, 'content');
+    if (input.title !== undefined) this.nonEmpty(input.title, 'title');
+    const types = ['preference', 'fact', 'decision', 'solution', 'convention'] as const;
+    if (input.type !== undefined && !types.includes(input.type)) {
+      throw new MemoryValidationError('type must be a known memory type');
+    }
+    if (
+      input.tags !== undefined &&
+      (!Array.isArray(input.tags) || input.tags.some((tag) => typeof tag !== 'string' || !tag.trim()))
+    ) {
+      throw new MemoryValidationError('tags must be non-empty strings');
+    }
+
+    const current = this.lookup(input.id, input.scope);
+    if (!current) return { status: 'not_found' };
+    if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
+      return { status: 'conflict', memory: current };
+    }
+
+    let memory = current;
+    let changed = false;
+
+    const contentChanged = input.content !== undefined && input.content !== current.content;
+    const titleChanged = input.title !== undefined && input.title !== current.title;
+    if (input.content !== undefined && contentChanged) {
+      const updated = this.store.updateContent(
+        input.id,
+        input.content,
+        input.expectedRevision ?? current.revision,
+        input.title ?? current.title,
+      );
+      if (updated.conflict || !updated.memory) return { status: 'conflict', memory: current };
+      memory = updated.memory;
+      changed = true;
+    } else if (titleChanged) {
+      // 标题变更同样走 CAS 并递增 revision，避免旧 revision 的更新覆盖重命名。
+      const updated = this.store.updateContent(
+        input.id,
+        current.content,
+        input.expectedRevision ?? current.revision,
+        input.title,
+      );
+      if (updated.conflict || !updated.memory) return { status: 'conflict', memory: current };
+      memory = updated.memory;
+      changed = true;
+    }
+
+    const patch: {
+      summary?: string;
+      tags?: string[];
+      type?: MemoryType;
+    } = {};
+    if (input.summary !== undefined && input.summary !== memory.summary) patch.summary = input.summary;
+    if (input.tags !== undefined) patch.tags = input.tags;
+    if (input.type !== undefined && input.type !== memory.type) patch.type = input.type;
+    if (Object.keys(patch).length > 0) {
+      const updated = this.store.updateMeta(input.id, patch);
+      if (updated) {
+        memory = updated;
+        changed = true;
+      }
+    }
+
+    return { status: changed ? 'updated' : 'unchanged', memory };
+  }
+
   async recallMemories(input: RecallMemoriesInput): Promise<RecallMemoriesResult> {    this.nonEmpty(input.query, 'query');
     const requestedProjection: MemoryProjection = input.projection ?? 'summary';
     if (!MEMORY_PROJECTIONS.includes(requestedProjection))
@@ -329,6 +415,12 @@ export class MemoryManager {
       ...input,
       scope: input.scope ?? this.options.defaultScope,
     });
+  }
+  async countCandidatesSince(input: { scope?: ScopeRef; since: number }): Promise<number> {
+    const scope = input.scope ?? this.options.defaultScope;
+    if (this.store.countCandidatesSince) return this.store.countCandidatesSince(scope, input.since);
+    const all = await this.listMemoryCandidates({ scope, limit: 200 });
+    return all.filter((candidate) => candidate.createdAt >= input.since).length;
   }
   async readMemoryCandidate(input: MemoryCandidateTargetInput): Promise<ReadMemoryCandidateResult> {
     if (!this.store.readMemoryCandidate)

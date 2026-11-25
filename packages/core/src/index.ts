@@ -44,6 +44,7 @@ export {
   detectSignals,
   extractCandidates,
   hasCredential,
+  redactCredentialText,
   isReferenceRequest,
   normalizeTitle,
 } from './application/AutoCaptureService.js';
@@ -134,3 +135,13 @@ export {
   InvalidMemoryReferenceError,
   MemoryValidationError,
 } from './errors.js';
+
+export {
+  parseCaptureTarget,
+  validateCaptureConfig,
+  type CaptureTarget,
+  type CaptureConfigCheck,
+  type CaptureConfigInput,
+  type ExtractionMessage,
+  type SourceKind,
+} from './domain/extraction.js';
