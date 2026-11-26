@@ -1,3 +1,7 @@
+/**
+ * 通用提取提示词（capture-v2）。
+ * 任何宿主适配器都直接复用这里，不要在适配器里复制文案。
+ */
 export const CAPTURE_PROMPT = `capture-v2: 只输出 JSON：{"candidates":[...]}，不要 Markdown、不要解释、不要复述指令。
 没有值得长期保存的内容时，输出 {"candidates":[]}（空数组是合法且常见的结果）。
 
@@ -22,3 +26,5 @@ export const CAPTURE_PROMPT = `capture-v2: 只输出 JSON：{"candidates":[...]}
 - type：preference|fact|decision|solution|convention；suggestedDomain：code|user|business|uncertain；
 - 不得改写用户原意，不得把建议/假设写成已确认事实；
 - 同义内容只保留一条；与已有记忆重复的不要输出。`;
+
+export const CAPTURE_EXTRACTOR_VERSION = 'extraction-v1';

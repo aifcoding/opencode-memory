@@ -20,6 +20,24 @@ export const MemoryMcpConfigSchema = z
       })
       .strict()
       .optional(),
+    extraction: z
+      .object({
+        enabled: z.boolean().default(false),
+        allowMcpExtract: z.boolean().default(false),
+        provider: z
+          .object({
+            baseUrl: z.string().url(),
+            model: z.string().min(1),
+            apiKeyEnv: z.string().min(1),
+          })
+          .strict(),
+        maxCandidates: z.number().int().min(1).max(20).default(8),
+        maxInputChars: z.number().int().min(1000).max(200000).default(60000),
+        maxOutputTokens: z.number().int().min(128).max(8000).default(1024),
+        timeoutMs: z.number().int().min(1000).max(120000).default(30000),
+      })
+      .strict()
+      .optional(),
     recall: z
       .object({
         maxCharacters: z.number().int().min(1).max(20000).default(3000),

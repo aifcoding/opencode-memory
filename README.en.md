@@ -136,13 +136,21 @@ Safe assisted capture is disabled by default. Configure it with:
   "capture": {
     "enabled": true,
     "onCompaction": true,
-    "agent": "memory-extractor",
+    "target": { "kind": "agent", "name": "memory-extractor" },
     "maxCandidates": 8
   }
 }
 ```
 
+`capture.target` is a three-way choice: `{ "kind": "agent", "name" }`, `{ "kind": "host-default" }`, or `{ "kind": "model", "provider", "model" }`. The `model` target is **not yet supported** by the OpenCode adapter (rejected at startup); only `agent` and `host-default` are usable. `agent` is equivalent to the legacy `capture.agent` field; specifying both is a conflict.
+
+v1 hosts have no structured source, so extraction is rejected by default (fail closed, returning "当前宿主不支持来源校验，已跳过提取"). Only setting `capture.trustRoleAsOrigin: true` maps protocol role to human/model — an explicit risk switch that v2 (with structured source) does not use.
+
 It can run after successful compaction archival or through explicit `memory_capture`. Candidates use `origin=agent`, `trust=low`, and `status=pending`, then go through `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`. `suggestedDomain` means code: OpenCode approval; user: personal Agent; business: business Agent; uncertain: user decides. Extraction uses an empty Session and deterministic credential, bidi, and invisible-Unicode scans.
+
+The extraction prompt (`CAPTURE_PROMPT`) and candidate validation (`validateCaptureCandidates`) live in core (`@aifcoding/memory-core`) and are shared by every host adapter — do not copy them. An adapter only supplies "materials + generator"; see [`docs/ADAPTER-CONTRACT.md`](docs/ADAPTER-CONTRACT.md).
+
+Safety and idempotency in the extraction pipeline (core `ExtractionService`): after per-message redaction, the joined result is **re-scanned** for credentials (a hit is `credential_residual`, preventing cross-message reassembly); the budget is a **hard cap** (an overlong single message keeps its tail deterministically and is truncated to `maxInputChars`); the idempotency key is a **content hash** (`sha256` over `sourceKind` / `targetFingerprint` / extractor version / final material, no longer length-based); failures only return a **whitelisted error code** (`invalid_json` / `invalid_output` / `extractor_no_text` / `session_create_failed` / `missing_api_key` / `generator_empty` / `generator_response_too_large` / `generator_http_<3 digits>`), everything else is folded into `generator_failed`.
 
 ## OpenCode adapter configuration
 
@@ -155,7 +163,9 @@ Configuration comes from `~/.config/opencode/opencode-memory.jsonc` (or `.json`)
 | `autoUpdate` | `boolean` | `true` | Check and refresh this adapter's OpenCode cache at startup; restart to apply |
 | `capture.enabled` | `boolean` | `false` | Enable safe assisted memory capture |
 | `capture.onCompaction` | `boolean` | `true` | Trigger after successful compaction archival when enabled |
-| `capture.agent` | `string` | none | Extractor agent; required when enabled |
+| `capture.target` | `object` | none | Three-way extraction target: `{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`; the `model` target is not yet supported by the OpenCode adapter |
+| `capture.agent` | `string` | none | Legacy field, equivalent to `{kind:"agent",name}`; conflicts with `capture.target` |
+| `capture.trustRoleAsOrigin` | `boolean` | `false` | v1 hosts only: default reject extraction (fail closed); set `true` to map protocol role to human/model (explicit risk switch) |
 | `capture.maxCandidates` | `number` | `8` | Maximum candidates per run (1..20) |
 | `autoCapture.enabled` | `boolean` | `true` | Write high-confidence signals as low-trust memories |
 | `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` generates candidates without writing; it still advances the session cursor and records no decisions |
@@ -179,9 +189,47 @@ To disable automatic memory (this does not affect separately configured `capture
 
 `autoCapture` and `autoRecall` replace their objects rather than merging individual fields; omitted fields use code defaults.
 
+### MCP extraction config and `memory_extract`
+
+On the MCP side, the `extraction` config block enables LLM extraction and exposes the `memory_extract` tool: the caller supplies text, the server redacts it locally, sends it to the configured openai-compatible model, and produces pending candidates (only `pending`, never formal memories directly).
+
+```jsonc
+{
+  "extraction": {
+    "enabled": true,
+    "allowMcpExtract": true,
+    "provider": {
+      "baseUrl": "https://api.example.com/v1",
+      "model": "your-model",
+      "apiKeyEnv": "YOUR_API_KEY_ENV"
+    },
+    "maxCandidates": 8,
+    "maxInputChars": 60000,
+    "maxOutputTokens": 1024,
+    "timeoutMs": 30000
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|---|---|---:|---|
+| `extraction.enabled` | `boolean` | `false` | Enable extraction (`memory_extract` requires it) |
+| `extraction.allowMcpExtract` | `boolean` | `false` | Register the `memory_extract` tool |
+| `extraction.provider.baseUrl` | `string` | none | openai-compatible endpoint |
+| `extraction.provider.model` | `string` | none | Model name |
+| `extraction.provider.apiKeyEnv` | `string` | none | Name of the environment variable holding the API key (read from env only, never written to config or logs) |
+| `extraction.maxCandidates` | `number` | `8` | Maximum candidates per run (1..20) |
+| `extraction.maxInputChars` | `number` | `60000` | Material character cap (1000..200000) |
+| `extraction.maxOutputTokens` | `number` | `1024` | Generation token cap (128..8000) |
+| `extraction.timeoutMs` | `number` | `30000` | Generation timeout (1000..120000) |
+
+`memory_extract` treats the input text as untrusted `origin='model-report'` material: it is redacted locally, passes through the same safety pipeline, then sent to the model. The tool's prompt and validation reuse core (`CAPTURE_PROMPT` / `validateCaptureCandidates`) rather than being duplicated in the MCP side. **Real-model end-to-end for MCP is not yet verified** (currently only unit and tool-level tests).
+
 ## Usage examples
 
 Complete OpenCode conversation examples and the tool reference are in [`packages/opencode/README.md`](packages/opencode/README.md).
+
+New host adapters should read the adapter contract in [`docs/ADAPTER-CONTRACT.md`](docs/ADAPTER-CONTRACT.md).
 
 ## How it works
 
@@ -219,22 +267,22 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 
 ### Automatic memory (v2)
 
-> The local source is `@aifcoding/opencode-memory@2.4.0-rc.1` (unpublished, requires `@aifcoding/memory-core@0.5.0`); on npm, `next` is still `2.3.0-rc.2` (old capture behaviour) and `latest` is `2.2.2`. This section describes the local source.
+> The local source is `@aifcoding/opencode-memory@2.4.0-rc.2` (unpublished, requires `@aifcoding/memory-core@0.5.1`); on npm, `next` is still `2.3.0-rc.2` (old capture behaviour) and `latest` is `2.2.2`. This section describes the local source.
 
 On every model request, v2 runs one automatic memory pass:
 
 1. **Capture**: extracts only from the last message recognized as genuine user input; final assistant replies are not archived. Each text unit is routed by an admission matrix, and signals are not inherited across sentences:
-   - **Written directly** to `memories` (`origin=agent`, `trust=low`): E1 explicit save (`记住：…`), S1 complete configuration binding (`entity.field=value`, with only endpoint/port/version/path fields and type-checked values), D1 explicit selection (`本项目决定采用 X`).
-   - **Queued as pending candidates** in `memory_candidates`: E2 weak explicit wording, S2 incomplete structured facts, D2 other decisions, C2 corrections that cannot be safely targeted.
+   - **Written directly** to `memories` (`origin=agent`, `trust=low`): S1 new complete configuration binding; C1 complete correction update; E1 explicit save whose body fully parses as a configuration binding, decision (with reason) or convention.
+   - **Queued as pending candidates** in `memory_candidates`: other complete E1 statements, non-explicit complete decisions/conventions, complete corrections that cannot be safely targeted, configuration conflicts.
    - **Updating an existing memory**: only C1 (a whitelisted field plus a type-valid new value, exactly one matching `agent/low` entry, old value matches, CAS revision matches). Nothing else overwrites by title; conflicting content becomes a candidate.
    - **Never inspected**: content inside fenced code blocks or quote blocks. Auto-captured entries whose title is a single broad word are also not injected by auto recall.
-   - **Dropped**: Q Q&A-only replies (short answers such as `深蓝色` or `推`) and N units with no applicable rule.
+   - **Dropped**: Q&A-only replies (Q removed), weak keywords (E2 removed), incomplete structured facts (S2 removed), pure references (`记住这个`), questions, hypotheses and temporary arrangements.
 2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result. Pending candidates never enter `memories`, so neither recall nor `memory_recall` returns them.
 3. **Isolation**: the automatic-memory call has an outer error handler; capture and recall are separately wrapped, but the Pin transform sits outside it. Injected content is not persisted.
 
 LLM-assisted extraction is off by default. When enabled, locally redacted conversation material is sent to the selected model (the host default model unless `capture.agent` pins one); this may incur cost, and regex redaction cannot guarantee that every secret is detected.
 
-Limitations: at most 3 direct writes per message (direct writes plus candidates); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; Q&A pairs are no longer persisted at all; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
+Limitations: at most 3 direct writes per message (direct writes plus candidates); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; Q&A pairs and weak signals no longer produce any writes; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
 
 ### Session compaction archiving
 

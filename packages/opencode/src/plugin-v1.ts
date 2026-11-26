@@ -6,12 +6,10 @@ import type { Plugin, PluginInput, ToolContext } from '@opencode-ai/plugin';
 import { escapeXmlText, renderPinnedBlock, renderPinnedEntry } from '@aifcoding/memory-core';
 import type { Trust } from '@aifcoding/memory-core';
 import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
-import { CAPTURE_PROMPT } from './capture/prompt';
-import { captureOutputSchema } from './capture/schema';
-import { redactCredentialText } from '@aifcoding/memory-core';
-import { filterCaptureMessages, redactCaptureMaterial, type RawCaptureMessage } from './capture/filter';
-import { validateCaptureCandidates } from './capture/validate';
-import { CAPTURE_EXTRACTOR_VERSION } from './capture/extractor';
+import { CAPTURE_PROMPT, ExtractionService, validateCaptureConfig } from '@aifcoding/memory-core';
+import type { ExtractionMessage, TextGenerator } from '@aifcoding/memory-core';
+import { extractionMaterial, type HostMessage } from './context/material';
+import { filterCaptureMessages, type RawCaptureMessage } from './capture/filter';
 import { suggestedDomainHint } from './capture/hint';
 import { checkAndRefresh } from './self-update';
 
@@ -43,7 +41,25 @@ export const ConfigSchema = z
       .object({
         enabled: z.boolean().default(false),
         onCompaction: z.boolean().default(true),
+        /**
+         * v1 宿主没有结构化来源；默认拒绝提取（fail closed）。
+         * 仅当用户明确认可「协议角色=作者身份」时置 true。
+         */
+        trustRoleAsOrigin: z.boolean().default(false),
         agent: z.string().min(1).optional(),
+        target: z
+          .union([
+            z
+              .object({
+                kind: z.literal('model'),
+                provider: z.string().min(1),
+                model: z.string().min(1),
+              })
+              .strict(),
+            z.object({ kind: z.literal('agent'), name: z.string().min(1) }).strict(),
+            z.object({ kind: z.literal('host-default') }).strict(),
+          ])
+          .optional(),
         maxCandidates: z.number().int().min(1).max(20).default(8),
       })
       .strict()
@@ -91,120 +107,114 @@ async function captureSession(
   trigger: 'compaction' | 'manual',
   agent: string | undefined,
   maxCandidates: number,
+  trustRoleAsOrigin: boolean,
 ): Promise<string> {
   if (!client) return '无法提取：OpenCode client 不可用。';
-  const begun = await manager.beginCapture({
-    contextKey: sessionId,
+  // v2 宿主能给出结构化来源：注入消息（automation 等）不得进入提取材料。
+  const typedContext = (client.session as any).typedContext;
+  if (typeof typedContext === 'function') {
+    const typed = ((await typedContext({ path: { id: sessionId } })) ?? []) as HostMessage[];
+    const materials = extractionMaterial(typed);
+    if (materials.length === 0) return '没有可提取的材料。';
+    return captureMessages(
+      client,
+      manager,
+      sessionId,
+      sourceId,
+      trigger,
+      materials,
+      agent,
+      maxCandidates,
+    );
+  }
+  if (!trustRoleAsOrigin) {
+    // v1 宿主没有结构化来源，无法证明 user 消息来自人工；默认 fail-closed。
+    return '当前宿主不支持来源校验，已跳过提取（v1 可显式开启 capture.trustRoleAsOrigin）。';
+  }
+  const response = await client.session.messages({ path: { id: sessionId } });
+  const raw = ((response as any)?.data ?? []) as RawCaptureMessage[];
+  const filtered = filterCaptureMessages(raw);
+  if (filtered.length === 0) return '没有可提取的材料。';
+  return captureMessages(
+    client,
+    manager,
+    sessionId,
     sourceId,
     trigger,
-    extractorVersion: CAPTURE_EXTRACTOR_VERSION,
-  });
-  if (begun.status !== 'started')
-    return begun.status === 'already_completed' ? '该会话内容已提取过。' : '该会话正在提取中。';
-  let childId: string | undefined;
-  try {
-    const response = await client.session.messages({ path: { id: sessionId } });
-    const messages = ((response as any)?.data ?? []) as RawCaptureMessage[];
-    const filteredRaw = filterCaptureMessages(messages);
-    const redacted = redactCaptureMaterial(filteredRaw);
-    let filtered = redacted.messages.filter((message) => message.text && message.text !== '[REDACTED]');
-    // 材料预算：超限时保留最近消息，并显式标注已裁剪。
-    const MAX_MATERIAL_CHARS = 200_000;
-    if (JSON.stringify(filtered).length > MAX_MATERIAL_CHARS) {
-      let total = 0;
-      const kept: typeof filtered = [];
-      for (let index = filtered.length - 1; index >= 0; index -= 1) {
-        const message = filtered[index]!;
-        total += message.text.length;
-        if (total > MAX_MATERIAL_CHARS) break;
-        kept.unshift(message);
-      }
-      filtered = kept;
-      if (filtered.length > 0) {
-        filtered = [
-          { id: 'trimmed', role: 'user', text: '（更早的材料已裁剪：仅保留最近内容）' },
-          ...filtered,
-        ];
-      }
-    }
-    if (filtered.length === 0) {
-      await manager.failCapture({
-        captureKey: begun.captureKey,
-        leaseToken: begun.leaseToken,
-        errorCode: 'credential_material_only',
-      });
-      return '提取已取消：可用材料全部为敏感内容。';
-    }
-    if (redacted.redacted > 0) {
-      logError(client, `capture material redacted: ${redacted.redacted} span(s)`, undefined);
-    }
-    // 脱敏后再做一次残留检测：任何规则漏网都拒绝发送（fail-closed）。
-    // 用与脱敏相同的规则判定残留：占位符（password=环境变量）不会被误判。
-    if (redactCredentialText(filtered.map((message) => message.text).join('\n')).hits > 0) {
-      await manager.failCapture({
-        captureKey: begun.captureKey,
-        leaseToken: begun.leaseToken,
-        errorCode: 'credential_residual',
-      });
-      return '提取已取消：脱敏后仍检测到疑似凭据，未发送给模型。';
-    }
-    // Use a fresh session rather than fork: fork inherits history and defeats recursion filtering.
-    const fresh = await client.session.create();
-    childId = (fresh as any)?.data?.id ?? (fresh as any)?.id;
-    if (!childId) throw new Error('session.create did not return a session id');
-    const prompt = await client.session.prompt({
-      path: { id: childId },
-      body: {
-        // 未配置 agent 时使用宿主默认模型；配置了就切到该 agent。
-        ...(agent ? { agent } : {}),
-        parts: [
-          {
-            type: 'text',
-            text: `${CAPTURE_PROMPT}\n最多 ${maxCandidates} 条。会话内容：\n${JSON.stringify(filtered)}`,
-          },
-        ],
-      },
-    });
-    const text = ((prompt as any)?.data?.parts ?? []).find(
-      (part: any) => part.type === 'text',
-    )?.text;
-    if (!text) throw new Error('extractor returned no text');
-    const output = captureOutputSchema(maxCandidates).parse(JSON.parse(text));
-    const materialText = filtered.map((message) => message.text).join('\n');
-    const validated = validateCaptureCandidates(output.candidates, materialText, maxCandidates);
-    if (validated.filtered.length > 0) {
-      logError(client, `capture candidates filtered: ${validated.filtered.join(', ')}`, undefined);
-    }
-    const completed = await manager.completeCapture({
-      captureKey: begun.captureKey,
-      leaseToken: begun.leaseToken,
-      candidates: validated.candidates,
-    });
-    return `已生成 ${completed.candidateCount} 条候选记忆（过滤 ${completed.filteredCount} 条），请使用 memory_candidates 审批。`;
-  } catch (error) {
-    const code =
-      error instanceof z.ZodError
-        ? 'invalid_output'
-        : error instanceof SyntaxError
-          ? 'invalid_json'
-          : error instanceof Error && error.message.includes('session.create')
-            ? 'session_create_failed'
-            : 'capture_failed';
-    await manager.failCapture({
-      captureKey: begun.captureKey,
-      leaseToken: begun.leaseToken,
-      errorCode: code,
-    });
-    throw new CaptureExecutionError(code);
-  } finally {
-    if (childId) {
+    filtered.map((message) => ({
+      id: message.id,
+      role: message.role,
+      text: message.text,
+      synthetic: false,
+      origin: message.role === 'user' ? ('human' as const) : ('model' as const),
+    })),
+    agent,
+    maxCandidates,
+  );
+}
+
+/** 用已给定的材料直接提取（压缩摘要不需要再读会话消息）。 */
+async function captureMessages(
+  client: PluginInput['client'],
+  manager: ReturnType<typeof createSqliteMemoryManager>,
+  sessionId: string,
+  sourceId: string,
+  trigger: 'compaction' | 'manual',
+  messages: ExtractionMessage[],
+  agent: string | undefined,
+  maxCandidates: number,
+): Promise<string> {
+  if (!client) return '无法提取：OpenCode client 不可用。';
+  if (messages.length === 0) return '没有可提取的材料。';
+
+  // 宿主端口：新建临时子会话并生成一次；agent 可选（缺省宿主默认模型）。
+  const generator: TextGenerator = {
+    async generate(input) {
+      const fresh: any = await client.session.create();
+      const childId = fresh?.data?.id ?? fresh?.id;
+      if (!childId) throw new Error('session_create_failed');
       try {
-        await client.session.delete({ path: { id: childId } });
-      } catch {
-        /* child cleanup is best-effort */
+        const prompt: any = await client.session.prompt({
+          path: { id: childId },
+          body: {
+            ...(agent ? { agent } : {}),
+            parts: [
+              { type: 'text', text: `${input.instructions}\n\n会话内容：\n${input.data}` },
+            ],
+          },
+        });
+        const text = ((prompt as any)?.data?.parts ?? []).find(
+          (part: any) => part.type === 'text',
+        )?.text;
+        if (!text) throw new Error('extractor_no_text');
+        return { text };
+      } finally {
+        await client.session.delete({ path: { id: childId } }).catch(() => undefined);
       }
-    }
+    },
+  };
+
+  const service = new ExtractionService(manager, generator, {
+    maxInputChars: 60_000,
+    maxOutputTokens: 1024,
+    maxCandidates,
+  });
+  const outcome = await service.extract({
+    scope: DEFAULT_MEMORY_SCOPE,
+    sourceKind: 'host-transcript',
+    contextKey: sessionId,
+    snapshotId: sourceId,
+    trigger,
+    messages,
+    instructions: CAPTURE_PROMPT,
+    targetFingerprint: agent ?? 'host-default',
+  });
+  if (outcome.status === 'completed') {
+    return `已生成 ${outcome.candidateCount} 条候选记忆（过滤 ${outcome.filteredCount} 条），请使用 memory_candidates 审批。`;
   }
+  if (outcome.status === 'already-completed') return '该会话内容已提取过。';
+  if (outcome.status === 'in-progress') return '该会话正在提取中。';
+  return `提取未完成：${outcome.reason ?? outcome.status}`;
 }
 
 // opencode 数据根目录（与 session db 同根）：macOS/Linux 为 ~/.local/share/opencode
@@ -322,7 +332,32 @@ export const v1Plugin: Plugin = async (
       .catch(() => {});
   }
   const manager = createSqliteMemoryManager({ dbPath, pinQuota });
-  const capture = { enabled: false, onCompaction: true, maxCandidates: 8, ...config.data.capture };
+  const rawCapture = config.data.capture ?? {};
+  const normalized: Record<string, unknown> = { ...rawCapture };
+  if (normalized.enabled && !normalized.target && !normalized.agent) {
+    // OpenCode 适配层：未配置目标时使用宿主默认生成能力。
+    normalized.target = { kind: 'host-default' };
+  }
+  const targetCheck = validateCaptureConfig(normalized as any);
+  if (!targetCheck.ok) {
+    throw new Error(`[opencode-memory] invalid capture target: ${targetCheck.reason}`);
+  }
+  if (targetCheck.target?.kind === 'model') {
+    throw new Error(
+      '[opencode-memory] model target is not supported by the OpenCode adapter yet; use capture.agent to pin a model',
+    );
+  }
+  const capture = {
+    enabled: false,
+    onCompaction: true,
+    trustRoleAsOrigin: false,
+    maxCandidates: 8,
+    ...rawCapture,
+    agent:
+      targetCheck.target?.kind === 'agent'
+        ? targetCheck.target.name
+        : (rawCapture as { agent?: string }).agent,
+  };
   const recall = config.data.recall;
 
   return {
@@ -340,6 +375,7 @@ export const v1Plugin: Plugin = async (
             'manual',
             capture.agent,
             capture.maxCandidates,
+            capture.trustRoleAsOrigin,
           );
         },
       },
@@ -473,6 +509,9 @@ export const v1Plugin: Plugin = async (
             scope: DEFAULT_MEMORY_SCOPE,
           });
           if (result.status === 'not_found') return `未找到 id=${args.id}`;
+          if (result.status === 'quota_exceeded') {
+            return `更新被拒绝（id=${args.id}）：更新后会超出 pin 配额，未写入任何字段`;
+          }
           if (result.status === 'conflict') {
             return `更新冲突（id=${args.id}）：当前 revision=${result.memory?.revision ?? '?'}，请重新读取后再更新`;
           }
@@ -778,9 +817,53 @@ export const v1Plugin: Plugin = async (
     // 自动归档：会话压缩后，把 compaction 摘要存入情景记忆（session_summaries）
     event: async ({ event }) => {
       if (event.type !== 'session.compacted') return;
-      const sessionId = event.properties?.sessionID;
+      const props = event.properties as
+        | {
+            sessionID?: string;
+            summaryText?: string;
+            summaryId?: string;
+            summaryCreatedAt?: number;
+          }
+        | undefined;
+      const sessionId = props?.sessionID;
       if (!sessionId || !client) return;
+
+      const handleSummary = async (id: string, text: string, createdAt: number) => {
+        try {
+          await manager.archiveSummary({ id, contextKey: sessionId, text, createdAt });
+        } catch (error) {
+          logError(client, 'Session summary archive failed', error);
+          return;
+        }
+        if (!capture.enabled || !capture.onCompaction) return;
+        try {
+          // 压缩后的会话消息可能已被裁掉，直接用刚归档的摘要作为提取材料（也更省 token）。
+          await captureMessages(
+            client,
+            manager,
+            sessionId,
+            id,
+            'compaction',
+            [{ id, role: 'assistant', text, synthetic: false, origin: 'model' }],
+            capture.agent,
+            capture.maxCandidates,
+          );
+        } catch (error) {
+          logError(client, 'Capture extraction failed', error);
+        }
+      };
+
       try {
+        // v2 宿主直接把摘要放在事件里（properties.summaryText），消息结构没有 agent/parts，
+        // 遍历找不到 compaction 消息；v1 宿主没有该字段，仍走消息遍历。
+        if (props?.summaryText) {
+          await handleSummary(
+            props.summaryId ?? `${sessionId}:compaction:${props.summaryCreatedAt ?? Date.now()}`,
+            props.summaryText,
+            props.summaryCreatedAt ?? Date.now(),
+          );
+          return;
+        }
         const messagesResponse = await client.session.messages({ path: { id: sessionId } });
         const messages = messagesResponse?.data ?? [];
         for (const msg of messages) {
@@ -788,32 +871,11 @@ export const v1Plugin: Plugin = async (
           if (info.agent === 'compaction' || info.mode === 'compaction') {
             const textPart = (msg.parts ?? []).find((p) => p.type === 'text');
             if (textPart && textPart.type === 'text' && textPart.text) {
-              try {
-                await manager.archiveSummary({
-                  id: msg.info.id,
-                  contextKey: sessionId,
-                  text: textPart.text,
-                  createdAt: msg.info.time?.created ?? Date.now(),
-                });
-              } catch (error) {
-                logError(client, 'Session summary archive failed', error);
-                continue;
-              }
-              if (capture.enabled && capture.onCompaction) {
-                try {
-                  await captureSession(
-                    client,
-                    manager,
-                    sessionId,
-                    msg.info.id,
-                    'compaction',
-                    capture.agent,
-                    capture.maxCandidates,
-                  );
-                } catch (error) {
-                  logError(client, 'Capture extraction failed', error);
-                }
-              }
+              await handleSummary(
+                msg.info.id,
+                textPart.text,
+                msg.info.time?.created ?? Date.now(),
+              );
             }
           }
         }

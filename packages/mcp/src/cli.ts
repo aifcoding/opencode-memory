@@ -4,6 +4,8 @@ import type { MemoryManager } from '@aifcoding/memory-core';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { readConfig } from './config.js';
 import { createMemoryMcpServer } from './server.js';
+import { ExtractionService } from '@aifcoding/memory-core';
+import { createOpenAiCompatibleGenerator } from './extraction/generator.js';
 
 const configIndex = process.argv.indexOf('--config');
 const configPath = configIndex >= 0 ? process.argv[configIndex + 1] : undefined;
@@ -16,12 +18,33 @@ let manager: MemoryManager | undefined;
 try {
   const config = readConfig(configPath);
   manager = createSqliteMemoryManager({ dbPath: config.dbPath, pinQuota: config.pinQuota });
+  const extraction = config.extraction?.enabled
+    ? new ExtractionService(
+        manager,
+        createOpenAiCompatibleGenerator({
+          baseUrl: config.extraction.provider.baseUrl,
+          model: config.extraction.provider.model,
+          apiKeyEnv: config.extraction.provider.apiKeyEnv,
+          timeoutMs: config.extraction.timeoutMs,
+        }),
+        {
+          maxInputChars: config.extraction.maxInputChars,
+          maxOutputTokens: config.extraction.maxOutputTokens,
+          maxCandidates: config.extraction.maxCandidates,
+        },
+      )
+    : undefined;
   const server = createMemoryMcpServer({
     manager,
     scope: config.scope,
     profile: config.profile,
     writeTrust: config.writeTrust,
     allowCandidateReview: config.allowCandidateReview,
+    allowExtraction: config.extraction?.allowMcpExtract ?? false,
+    extraction,
+    extractionFingerprint: config.extraction
+      ? `${config.extraction.provider.baseUrl}|${config.extraction.provider.model}`
+      : undefined,
     defaultLimit: config.limits?.defaultLimit ?? 10,
     maxLimit: config.limits?.maxLimit ?? 50,
     previewLength: config.limits?.previewLength ?? 500,

@@ -1,3 +1,5 @@
+import type { MaterialOrigin } from './auto-memory.js';
+
 /** 提取目标：互斥三选一，运行期不切换。 */
 export type CaptureTarget =
   | { kind: 'model'; provider: string; model: string }
@@ -12,6 +14,8 @@ export interface ExtractionMessage {
   role: 'user' | 'assistant' | 'unknown';
   text: string;
   synthetic: boolean;
+  /** 作者身份；核心只接受 human/model（model-report 来源接受 model-report）。缺失即视为不可信。 */
+  origin?: MaterialOrigin;
 }
 
 export type CaptureTargetParse = { ok: true; target: CaptureTarget } | { ok: false; reason: string };

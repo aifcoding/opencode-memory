@@ -57,8 +57,11 @@ export {
   DEFAULT_AUTO_CAPTURE,
   DEFAULT_AUTO_RECALL,
 } from './domain/auto-memory.js';
+export { MATERIAL_ORIGINS } from './domain/auto-memory.js';
 export type {
   AutoCandidate,
+  CaptureMaterial,
+  MaterialOrigin,
   AutoCaptureConfig,
   AutoCaptureInput,
   AutoCaptureMode,
@@ -145,3 +148,19 @@ export {
   type ExtractionMessage,
   type SourceKind,
 } from './domain/extraction.js';
+
+export { ExtractionService, type ExtractionLimits, type ExtractionOutcome, type ExtractionRequest } from './application/ExtractionService.js';
+export type { TextGenerator, GenerationRequest, GenerationResult } from './ports/TextGenerator.js';
+
+export { CAPTURE_PROMPT, CAPTURE_EXTRACTOR_VERSION } from './extraction/prompt.js';
+export {
+  CAPTURE_TYPES,
+  CAPTURE_DOMAINS,
+  validateCaptureCandidates,
+} from './extraction/validate.js';
+export type {
+  CaptureCandidateOutput,
+  CaptureValidationResult,
+  CaptureType,
+  CaptureDomain,
+} from './extraction/validate.js';

@@ -162,7 +162,7 @@ test('capture filters synthetic Pin overlay from extractor prompt', async () => 
   };
   const h = await plugin.server(
     { client: mockClient },
-    { dbPath: join(dir, 'capture.db'), capture: { enabled: true, agent: 'extractor' } },
+    { dbPath: join(dir, 'capture.db'), capture: { enabled: true, agent: 'extractor', trustRoleAsOrigin: true } },
   );
   await h.tool.memory_capture.execute({}, ctx);
   expect(extractorPrompt).toContain('真实用户约定');

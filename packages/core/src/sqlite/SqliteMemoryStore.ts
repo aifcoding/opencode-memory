@@ -340,6 +340,15 @@ export class SqliteMemoryStore implements MemoryStore {
   }
 
   // 在单个写事务内完成「读固定项 → 按最终渲染长度校验配额 → 更新」，避免多进程并发突破配额
+  pinnedContextSizeWith(entry: MemoryEntry): number {
+    const others = this.db
+      .query(
+        `SELECT * FROM memories WHERE scope = ? AND scope_key = ? AND deleted_at IS NULL AND pinned_at IS NOT NULL AND id != ?`,
+      )
+      .all(entry.scope, entry.scopeKey, entry.id) as MemoryRow[];
+    return renderPinnedBlock([...others.map((row) => mapRow(row)), entry]).length;
+  }
+
   pinWithinQuota(
     id: number,
     pinMode: PinMode,

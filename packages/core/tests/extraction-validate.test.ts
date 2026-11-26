@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { validateCaptureCandidates } from '../src/capture/validate';
+import { validateCaptureCandidates } from '../src/extraction/validate';
 
 const material = 'atlas 仓库统一放 /srv/atlas，staging 的 API_PORT 固定 8080，已确认。';
 
@@ -8,6 +8,7 @@ const candidate = (overrides: Record<string, unknown> = {}) => ({
   content: 'atlas 仓库统一放在 /srv/atlas，部署脚本通过该路径取构件。',
   type: 'fact' as const,
   suggestedDomain: 'code' as const,
+  evidenceQuote: 'atlas 仓库统一放 /srv/atlas',
   ...overrides,
 });
 

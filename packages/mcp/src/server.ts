@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/server';
-import type { MemoryManager, ScopeRef } from '@aifcoding/memory-core';
+import type { ExtractionService, MemoryManager, ScopeRef } from '@aifcoding/memory-core';
 import { candidateTools } from './tools/candidates.js';
+import { extractTools } from './tools/extract.js';
 import { readTools } from './tools/memory-read.js';
 import { writeTools } from './tools/memory-write.js';
 import { pinTools } from './tools/pins.js';
@@ -21,6 +22,10 @@ export interface MemoryMcpServerOptions {
   previewLength?: number;
   writeTrust?: 'high' | 'low';
   allowCandidateReview?: boolean;
+  /** 是否注册 MCP 手动提取工具；需同时提供 extraction。 */
+  allowExtraction?: boolean;
+  extraction?: ExtractionService;
+  extractionFingerprint?: string;
   recall?: Partial<MemoryMcpRecallConfig>;
 }
 
@@ -81,6 +86,7 @@ export function createMemoryMcpServer(options: MemoryMcpServerOptions): McpServe
   const capabilities = profileCapabilities[profile].filter(
     (capability) => options.allowCandidateReview || capability !== 'candidate:review',
   );
+  if (options.extraction && options.allowExtraction) capabilities.push('candidate:extract');
   const context: MemoryMcpToolContext = {
     manager: options.manager,
     scope: options.scope,
@@ -89,10 +95,12 @@ export function createMemoryMcpServer(options: MemoryMcpServerOptions): McpServe
     previewLength,
     writeTrust: options.writeTrust ?? 'low',
     recall,
+    extraction: options.extraction,
+    extractionFingerprint: options.extractionFingerprint,
   };
   const server = new McpServer({ name: 'memory-mcp', version: '0.2.0' });
   for (const definition of registerAllowed(
-    [...readTools, ...writeTools, ...pinTools, ...candidateTools],
+    [...readTools, ...writeTools, ...pinTools, ...candidateTools, ...extractTools],
     capabilities,
   )) {
     server.registerTool(

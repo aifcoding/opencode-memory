@@ -72,6 +72,9 @@ const HEDGE_OR_EXAMPLE = /(?:比如|例如|示例|举例|假设|假如|如果|�
 const DECISION_DIRECT =
   /^(?:本项目|项目\s*[A-Za-z][A-Za-z0-9._-]*)\s*(?:已)?\s*决定\s*采用\s*([A-Za-z][A-Za-z0-9.+-]*|“[^”]{1,40}”|"[^"]{1,40}")\s*$/;
 const DECISION_WORD = /(?:决定|采用|否决|放弃)/;
+/** 完整决策（带原因/依据）：显式保存路径下可直接直写。 */
+const DECISION_WITH_BASIS =
+  /(?:本项目|项目\s*[A-Za-z][A-Za-z0-9._-]*)?\s*(?:已)?\s*(?:决定|采用|选用|否决|放弃)\s*(?:采用\s*)?([A-Za-z][A-Za-z0-9.+-]*|“[^”]{1,40}”|"[^"]{1,40}")\s*[，,]\s*(?:原因|因为|由于|理由)\s*[是为]?\s*.{2,}/;
 const QUOTED = /“[^”]{1,40}”|"[^"]{1,40}"/;
 
 const CORRECTION_PAIR = /不是\s*([^，。；\s]{1,20})\s*[，,]?\s*(?:而是|是|应该(?:是)?)\s*([^。；\n]{1,60})$/;
@@ -557,7 +560,22 @@ function routeBinding(text: string, ctx: RouterContext): AutoRoutedUnit | undefi
   return undefined;
 }
 
+const HYPOTHESIS_LEAD = /(?:^|[，,。；;]\s*)(?:如果|假如|假设|是否|若是|会不会|能不能)/;
+const TEMPORARY_LEAD = /(?:本次|这次|今天先|暂时|临时|先这样)/;
+
+/** 陈述状态闸：问句、假设、临时安排不进入任何形态。 */
+function statementGate(text: string): string | undefined {
+  const trimmed = text.trim();
+  if (QUESTION_LIKE.test(trimmed)) return 'user question';
+  if (HYPOTHESIS_LEAD.test(trimmed)) return 'hypothesis or conditional';
+  if (TEMPORARY_LEAD.test(trimmed) && !hasStructuredValue(trimmed)) return 'temporary arrangement';
+  return undefined;
+}
+
 function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
+  const blocked = statementGate(text);
+  if (blocked) return dropped('N', text, blocked);
+
   // 1) 纠正优先：不得被 explicit/structured 绕过。
   const correction = routeCorrection(text, ctx);
   if (correction) return correction;
@@ -568,25 +586,9 @@ function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
     const body = save[1]!.trim();
     if (QUESTION_LIKE.test(body)) return dropped('N', text, 'save body is a question');
     if (/^(?:不要|别)(?:保存|记)/.test(body)) return dropped('N', text, 'negated save');
-    // 纯指代：保存意愿明确但对象不明。有前文 → 待澄清候选；无前文 → 丢弃（不造空记忆）。
+    // 纯指代且无结构化值：按白名单设计丢弃（不直写、不产兜底候选）。
     if ((DEICTIC.test(body) || DEICTIC_LONG.test(body)) && !hasStructuredValue(body)) {
-      const contextText = `${ctx.previousUserText ?? ''}\n${ctx.previousAssistantText ?? ''}`.trim();
-      if (!contextText) return dropped('N', text, 'deictic without context');
-      if (hasCredential(contextText)) return dropped('N', text, 'credential in referenced context');
-      // 上文恰好只有一个客观值：指代可解析，直接按该值落记忆并标注来源。
-      const values = structuredValues(contextText);
-      if (values.length === 1) {
-        const value = values[0]!;
-        const candidate = buildCandidate(`${body} → ${value}`, 'E1', 'explicit', ctx.now, value);
-        if (candidate) candidate.content = `${candidate.content}\n来源：指代解析自上一轮上下文`;
-        return { rule: 'E1', text, candidate };
-      }
-      return {
-        rule: 'E2',
-        text,
-        candidate: buildDeicticCandidate(text, body, ctx),
-        reason: 'deictic reference needs clarification',
-      };
+      return dropped('N', text, 'deictic save without explicit object');
     }
     if (body.length < 4) return dropped('N', text, 'save body too short');
     if (
@@ -594,6 +596,31 @@ function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
       body.replace(/\[REDACTED\]/g, '').replace(/[\s:：=，,]/g, '').length < 4
     ) {
       return dropped('N', text, 'credential-only save');
+    }
+    // E1 正文按白名单形态解析：配置绑定归一为 S1（直写）；完整决策/约定直写；
+    // 其余完整内容只产候选；解析不完整或过短丢弃。
+    const bodyBinding = routeBinding(body, ctx);
+    if (bodyBinding) {
+      if (bodyBinding.rule === 'S1') return { ...bodyBinding, rule: 'S1' };
+      if (bodyBinding.rule === 'C1' || bodyBinding.rule === 'C2') return bodyBinding;
+      return dropped('N', text, 'explicit save with invalid binding');
+    }
+    const bodyDecision = body.match(DECISION_WITH_BASIS) ?? body.match(DECISION_DIRECT);
+    if (bodyDecision && /(原因|因为|由于|理由)/.test(body)) {
+      return {
+        rule: 'D1',
+        text,
+        candidate: buildCandidate(body, 'D1', 'decision', ctx.now, `decision ${bodyDecision[1]!.trim()}`),
+      };
+    }
+    if (
+      PREFERENCE.test(body) &&
+      /(以后|统一|禁止|不要|默认|一律|全部)/.test(body) &&
+      body.replace(/\s+/g, '').length >= 6
+    ) {
+      const candidate = buildCandidate(body, 'E1', 'explicit', ctx.now);
+      if (candidate) candidate.type = 'preference';
+      return { rule: 'E1', text, candidate };
     }
     const facts = body.split(/(?<=[。！？!?\n；;])/).map((part) => part.trim()).filter((part) => part.length >= 2);
     if (facts.length > 1) {
@@ -604,9 +631,13 @@ function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
         reason: 'multiple facts in one save',
       };
     }
-    const candidate = buildCandidate(body, 'E1', 'explicit', ctx.now);
-    if (candidate && PREFERENCE.test(body)) candidate.type = 'preference';
-    return { rule: 'E1', text, candidate };
+    if (body.replace(/\s+/g, '').length < 6) return dropped('N', text, 'save body too short');
+    return {
+      rule: 'E2',
+      text,
+      candidate: buildCandidate(body, 'E2', 'explicit', ctx.now),
+      reason: 'complete statement without whitelist form, kept as candidate',
+    };
   }
 
   // 3) S1 完整绑定 / S2 不完整结构化材料。
@@ -634,49 +665,8 @@ function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
     return dropped('N', text, 'decision without object');
   }
 
-  // 5) S2：有结构化值且有字段线索，但无法完整解析。
-  if (hasStructuredValue(text) && /(地址|url|endpoint|端口|port|版本|version|路径|path|目录)/i.test(text)) {
-    return {
-      rule: 'S2',
-      text,
-      candidate: buildCandidate(text, 'S2', 'structured', ctx.now),
-      reason: 'structured but incomplete',
-    };
-  }
-
-  // 6) E2 弱 explicit。
-  if (EXPLICIT_WEAK.test(text)) {
-    if (QUESTION_LIKE.test(text)) return dropped('N', text, 'explicit wording in a question');
-    const stripped = text.replace(EXPLICIT_WEAK, '').trim();
-    if (stripped.length >= 4) {
-      return {
-        rule: 'E2',
-        text,
-        candidate: buildCandidate(text, 'E2', 'explicit', ctx.now),
-      };
-    }
-    return dropped('N', text, 'explicit without object');
-  }
-
-  // 7) 只有结构化值、没有字段线索 → 丢弃；纯问答对 → Q。
+  // 7) 只有结构化值、没有字段线索 → 丢弃。Q（问答对）不再产生任何写入。
   if (hasStructuredValue(text)) return dropped('N', text, 'bare structured value');
-
-  if (
-    ctx.previousAssistantText &&
-    !QUESTION_LIKE.test(text.trim()) &&
-    /[？?]|是什么|是多少|哪个|哪里|怎么|如何/.test(ctx.previousAssistantText)
-  ) {
-    const trimmed = text.trim();
-    if (trimmed.length < 3 || AGREEMENT_ONLY.test(trimmed) || QA_FILLER.test(trimmed)) {
-      return dropped('N', text, 'qa filler reply');
-    }
-    return {
-      rule: 'Q',
-      text,
-      candidate: buildCandidate(text, 'Q', 'qa', ctx.now),
-      reason: 'qa-only reply, kept as candidate',
-    };
-  }
   return dropped('N', text, 'no admission rule matched');
 }
 
@@ -684,13 +674,15 @@ function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
 export function routeText(
   input: AutoCaptureInput & { autoEntries?: MemoryEntry[] },
 ): { rules: Partial<Record<AutoRule, number>>; direct: AutoRoutedUnit[]; pending: AutoRoutedUnit[]; dropped: AutoRoutedUnit[] } {
-  const text = stripSynthetic(input.text);
   const result = {
     rules: {} as Partial<Record<AutoRule, number>>,
     direct: [] as AutoRoutedUnit[],
     pending: [] as AutoRoutedUnit[],
     dropped: [] as AutoRoutedUnit[],
   };
+  // 来源准入：只有人工材料能作为「用户陈述」；注入/未知来源一律不采。
+  if (input.current?.origin !== 'human') return result;
+  const text = stripSynthetic(input.current.text);
   if (!text) return result;
   if (/^\s*You are (?:a|an) /i.test(text) && text.length > 200) return result;
   const safeText = redactCredentialText(text).text;
@@ -698,8 +690,10 @@ export function routeText(
 
   const ctx: RouterContext = {
     autoEntries: input.autoEntries ?? [],
-    previousUserText: input.previousUserText,
-    previousAssistantText: input.previousAssistantText,
+    previousUserText:
+      input.previousUser?.origin === 'human' ? input.previousUser.text : undefined,
+    previousAssistantText:
+      input.previousAssistant?.origin === 'model' ? input.previousAssistant.text : undefined,
     now: input.now ?? Date.now(),
   };
   let used = 0;
@@ -789,6 +783,11 @@ export class AutoCaptureService {
     if (!this.config.enabled) return empty();
     const limit = Math.min(Math.max(0, this.config.maxWritesPerTurn), MAX_PER_MESSAGE);
     if (limit === 0) return empty();
+
+    // 来源准入在任何读库/写库之前：注入消息（automation/压缩摘要/系统消息）不得进入规则采集。
+    if (input.current?.origin !== 'human') {
+      return { ...empty(), skipped: [`non-human-origin:${input.current?.origin ?? 'missing'}`] };
+    }
 
     const existing = await this.manager.listMemories({ scope: input.scope, limit: 200 });
     const autoEntries = existing.filter(
@@ -893,13 +892,13 @@ export class AutoCaptureService {
       if (batch.length < pendingUnits.length) {
         routed.skipped.push(`daily pending cap reached (${DAILY_PENDING_CAP})`);
       }
-      const text = stripSynthetic(input.text);
+      const text = stripSynthetic(input.current.text);
       const deictic = routed.pending.some(
         (unit) => unit.reason === 'deictic reference needs clarification',
       );
       const digest = createDigest(
         deictic
-          ? `${text}\u0000${input.previousUserText ?? ''}\u0000${input.previousAssistantText ?? ''}`
+          ? `${text}\u0000${input.previousUser?.origin === 'human' ? input.previousUser.text : ''}\u0000${input.previousAssistant?.origin === 'model' ? input.previousAssistant.text : ''}`
           : text,
       );
       const begun = await this.manager.beginCapture({

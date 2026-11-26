@@ -171,7 +171,7 @@ export class MemoryManager {
     expectedRevision?: number;
     scope?: ScopeRef;
   }): Promise<{
-    status: 'updated' | 'unchanged' | 'conflict' | 'not_found';
+    status: 'updated' | 'unchanged' | 'conflict' | 'not_found' | 'quota_exceeded';
     memory?: MemoryEntry;
   }> {
     if (!Number.isInteger(input.id) || input.id <= 0) {
@@ -194,6 +194,19 @@ export class MemoryManager {
     if (!current) return { status: 'not_found' };
     if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
       return { status: 'conflict', memory: current };
+    }
+    // 已 pin 的记录：按更新后的内容重算 pinned 配额，超限则拒绝（不写任何字段）。
+    if (current.pinnedAt != null && this.store.pinnedContextSizeWith) {
+      const projected: MemoryEntry = {
+        ...current,
+        content: input.content ?? current.content,
+        summary: input.summary ?? current.summary,
+        title: input.title ?? current.title,
+      };
+      const size = this.store.pinnedContextSizeWith(projected);
+      if (size > this.options.pinQuota) {
+        return { status: 'quota_exceeded', memory: current };
+      }
     }
 
     let memory = current;

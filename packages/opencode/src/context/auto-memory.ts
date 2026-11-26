@@ -6,6 +6,7 @@ import {
   isReferenceRequest,
   type AutoCaptureConfig,
   type AutoRecallConfig,
+  type CaptureMaterial,
   type MemoryManager,
   type ScopeRef,
 } from '@aifcoding/memory-core';
@@ -110,6 +111,12 @@ export interface AutoMemoryInput {
   globalScope?: ScopeRef;
   sessionID: string;
   messages: ChatMessage[];
+  /** 规则采集材料（由适配层按宿主来源归一）。缺失时规则采集整体跳过。 */
+  materials?: {
+    current: CaptureMaterial;
+    previousUser?: CaptureMaterial;
+    previousAssistant?: CaptureMaterial;
+  };
   excludeIds?: number[];
   /** 提取会话等不应参与自动记忆的会话。 */
   skipSessionIDs?: ReadonlySet<string>;
@@ -126,6 +133,8 @@ export interface AutoMemoryResult {
   /** pending 达到统计上限时为 true。 */
   pendingCapped: boolean;
   recalled: number;
+  /** 规则采集被来源准入拦下时的原因（便于观察适配缺失）。 */
+  captureSkipped?: string;
 }
 
 const CURSOR_KEY = 'auto:cursor';
@@ -180,42 +189,50 @@ export async function runAutoMemory(input: AutoMemoryInput): Promise<AutoMemoryR
   if (isSubagent) return result;
 
   const exchange = lastExchange(input.messages);
-  if (!exchange) return result;
-  const text = exchange.text;
-
-  // 游标带消息位置：两次相同的「记住这个」指向不同上下文时不会互相挡掉。
-  const hash = createHash('sha256')
-    .update(`${exchange.index}\u0000${text}`)
-    .digest('hex')
-    .slice(0, 16);
-
+  const materials = input.materials;
   let createdIds: number[] = [];
+
+  // 1) 规则采集：只吃结构化材料（作者身份来自宿主 type/metadata），与召回用的正文形态无关。
+  //    缺材料/来源非人工时跳过，且不消费游标，便于适配层修复后补采。
   if (input.config.capture.enabled) {
-    try {
-      const previous = await input.manager.getContextValue({
-        contextKey: input.sessionID,
-        key: CURSOR_KEY,
-      });
-      if (previous !== hash) {
-        const capture = new AutoCaptureService(input.manager, input.config.capture);
-        const outcome = await capture.capture({
-          text,
-          previousUserText: exchange.previousUserText,
-          previousAssistantText: exchange.previousAssistantText,
-          scope: input.scope,
-        });
-        result.captured = outcome.written + outcome.updated;
-        result.proposed = outcome.pendingCreated;
-        createdIds = outcome.createdIds;
-        await input.manager.setContextValue({
+    if (!materials) {
+      result.captureSkipped = 'materials-missing';
+    } else if (materials.current.origin !== 'human') {
+      result.captureSkipped = `non-human-origin:${materials.current.origin}`;
+    } else {
+      // 游标只由采集材料决定：用召回正文会让注入消息触发旧人工消息重采。
+      const cursorSeed = materials.current.messageId ?? 'no-id';
+      const captureCursor = createHash('sha256')
+        .update(`${cursorSeed}\u0000${materials.current.text}`)
+        .digest('hex')
+        .slice(0, 16);
+      try {
+        const previous = await input.manager.getContextValue({
           contextKey: input.sessionID,
           key: CURSOR_KEY,
-          value: hash,
         });
-        recallCache.clear();
+        if (previous !== captureCursor) {
+          const capture = new AutoCaptureService(input.manager, input.config.capture);
+          const outcome = await capture.capture({
+            current: materials.current,
+            previousUser: materials.previousUser,
+            previousAssistant: materials.previousAssistant,
+            scope: input.scope,
+          });
+          result.captured = outcome.written + outcome.updated;
+          result.proposed = outcome.pendingCreated;
+          if (outcome.skipped.length > 0) result.captureSkipped = outcome.skipped[0];
+          createdIds = outcome.createdIds;
+          await input.manager.setContextValue({
+            contextKey: input.sessionID,
+            key: CURSOR_KEY,
+            value: captureCursor,
+          });
+          recallCache.clear();
+        }
+      } catch {
+        // 采集失败不影响召回与 Pin
       }
-    } catch {
-      // 采集失败不影响召回与 Pin
     }
   }
 
@@ -231,6 +248,14 @@ export async function runAutoMemory(input: AutoMemoryInput): Promise<AutoMemoryR
   } catch {
     // 统计失败不影响主流程
   }
+
+  if (!exchange) return result;
+  const text = exchange.text;
+  // 召回缓存按「用户问题位置 + 正文」区分，与采集游标互不影响。
+  const hash = createHash('sha256')
+    .update(`${exchange.index}\u0000${text}`)
+    .digest('hex')
+    .slice(0, 16);
 
   const mode = input.config.recall.mode;
   if (mode === 'off' || mode === 'shadow') return result;

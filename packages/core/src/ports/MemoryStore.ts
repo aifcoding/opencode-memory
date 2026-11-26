@@ -98,6 +98,8 @@ export interface MemoryStore {
   restore(id: number): boolean;
   listByScope(scope: Scope, scopeKey: string, options?: ListByScopeOptions): MemoryEntry[];
   listPinned(scope: Scope, scopeKey: string): MemoryEntry[];
+  /** 计算「把 entry 作为 pinned 内容」后的 pinned 块总长度（不写库）。 */
+  pinnedContextSizeWith?(entry: MemoryEntry): number;
   pinWithinQuota(
     id: number,
     pinMode: PinMode,

@@ -54,7 +54,7 @@ $HOME/.config/opencode
 
 #### 自动记忆（v2）
 
-> 本地源码为 `2.4.0-rc.1`（未发布，依赖 `memory-core@0.5.0`）；npm `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 为 `2.2.2`。
+> 本地源码为 `2.4.0-rc.2`（未发布，依赖 `memory-core@0.5.1`）；npm `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 为 `2.2.2`。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
@@ -63,7 +63,9 @@ $HOME/.config/opencode
 | `autoCapture.maxWritesPerTurn` | `number` | `3` | 单条消息最多写入条数，直写与候选合计（0..10，超大值按 3 截断） |
 | `capture.enabled` | `boolean` | `false` | 是否启用 LLM 辅助提取（压缩后 / 手动 `memory_capture`） |
 | `capture.onCompaction` | `boolean` | `true` | 压缩后自动触发提取 |
-| `capture.agent` | `string` | 未配置 | **可选**：缺省使用宿主默认模型；配置后固定到该 agent（例如专用 ds flash agent） |
+| `capture.target` | `object` | 未配置 | 提取目标三选一：`{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`；`model` 目标在 OpenCode 适配器尚未支持（启动时拒绝） |
+| `capture.agent` | `string` | 未配置 | 旧字段，等价 `{kind:"agent",name}`；与 `capture.target` 同时出现视为冲突 |
+| `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 宿主：默认拒绝提取（fail closed）；置 `true` 才按协议角色映射 human/model（显式风险开关） |
 | `capture.maxCandidates` | `number` | `8` | 单次最多候选（1..20） |
 | `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` 检索并注入摘要；`hint` 只注入固定检索提示；`shadow` 不检索不注入，无决策记录 |
 | `autoRecall.maxItems` | `number` | `3` | 单次最多注入条数（1..10） |
@@ -87,16 +89,16 @@ $HOME/.config/opencode
 - 配置非法（未知字段、越界值、非法枚举，例如 `autoCapture.mode: "active"`）时插件显式报错并拒绝加载，不静默回退到默认值；日志为 `failed to load plugin … invalid config: <字段>: <原因>`，此时记忆工具与自动记忆都不可用，需修正配置后重载。
 
 
-#### 通用提取目标（设计已定，尚未接线）
+#### 通用提取目标（capture.target）
 
-> 阶段 ① 仅实现了校验函数（`parseCaptureTarget` / `validateCaptureConfig`）；OpenCode 适配层尚未读取该配置。
+`capture.target` 是提取目标的互斥三选一；OpenCode 适配层已接线读取并做启动期校验。
 
 ```jsonc
 {
   "capture": {
     "enabled": true,
     "onCompaction": true,
-    "target": { "kind": "model", "provider": "extractor", "model": "YOUR_MODEL" },
+    "target": { "kind": "agent", "name": "memory-extractor" },
     "maxCandidates": 8
   }
 }
@@ -105,12 +107,22 @@ $HOME/.config/opencode
 | 字段 | 取值 | 说明 |
 |---|---|---|
 | `capture.target.kind` | `model` \| `agent` \| `host-default` | 互斥；`enabled=true` 时必须提供且可解析 |
-| `model` 目标 | `provider` + `model` | `provider` 是配置里的 provider 键名，不接受 URL/内嵌凭据 |
+| `model` 目标 | `provider` + `model` | `provider` 是配置里的 provider 键名，不接受 URL/内嵌凭据；**OpenCode 适配器尚未支持，启动时拒绝** |
 | `agent` 目标 | `name` | 宿主自己的 agent 名，仅宿主有 agent 概念时使用 |
-| `host-default` | 无附加字段 | 必须显式选择，宿主解析不了则拒绝启动 |
+| `host-default` | 无附加字段 | 使用宿主默认生成能力（OpenCode：未配 target/agent 时自动注入） |
 | 旧 `capture.agent` | string | 映射为 agent target；与 `target` 同现视为冲突 |
 
-行为：`enabled=false` 允许无 target；生成失败不切换到其它目标；旧版直接 `agent` 配置在完成迁移前仍按 agent target 解释。
+解析规则（`parseCaptureTarget` / `validateCaptureConfig`，core 内实现）：
+
+- `enabled=false` 允许无 target；`enabled=true` 无 target 或 target 无法解析 → 拒绝启动。
+- 生成失败不切换到其它目标；运行期不换目标。
+- OpenCode 适配层：`enabled=true` 且既无 `target` 也无旧 `agent` 时自动注入 `{ kind: "host-default" }`；`target.kind='model'` 被适配器显式拒绝。
+- 旧 `capture.agent` 映射为 agent target；与 `capture.target` 同现视为冲突，不静默取值。
+
+`capture.trustRoleAsOrigin`（boolean，默认 `false`）：
+
+- v1 宿主没有结构化来源，无法证明 user 消息来自人工，默认拒绝提取（fail closed），返回「当前宿主不支持来源校验，已跳过提取（v1 可显式开启 capture.trustRoleAsOrigin）」。
+- 置 `true` 才按协议角色映射 human/model。这是**显式风险开关**；v2 有结构化来源（`typedContext` → origin）时不使用它。
 
 ### MCP Adapter
 
@@ -302,10 +314,19 @@ Overflow 中的 `score` 是 FTS5/BM25 当前查询的相对相关度：数值越
 |---|---|---:|---|
 | `capture.enabled` | boolean | `false` | 是否启用候选提取 |
 | `capture.onCompaction` | boolean | `true` | 是否在会话压缩后自动提取 |
-| `capture.agent` | string | 无 | 提取 Agent；启用 Capture 时必填 |
+| `capture.target` | object | 无 | 提取目标三选一：`{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`；`model` 目标在 OpenCode 适配器尚未支持 |
+| `capture.agent` | string | 无 | 旧字段，等价 `{kind:"agent",name}`；与 `capture.target` 同时出现视为冲突 |
+| `capture.trustRoleAsOrigin` | boolean | `false` | 仅 v1 宿主：默认拒绝提取（fail closed）；置 `true` 才按协议角色映射 human/model |
 | `capture.maxCandidates` | integer | `8` | 单次最多候选数，范围 1～20 |
 
-Capture 会额外调用模型，并将过滤后的会话文本发送给配置的 Agent。
+Capture 会额外调用模型，并将脱敏、裁剪后的会话文本发送给提取目标（agent 或宿主默认模型）。提取提示词与候选校验在 core（`CAPTURE_PROMPT` / `validateCaptureCandidates`），适配器只提供材料与生成器，详见 [`docs/ADAPTER-CONTRACT.md`](ADAPTER-CONTRACT.md)。
+
+提取管线（core `ExtractionService`）的安全与幂等行为：
+
+- **最终载荷复扫**：逐消息脱敏后对拼接后的 `material` 再扫描凭据，命中即 `credential_residual` 拒绝生成（防跨消息重组凭据）。
+- **预算硬上限**：先按整条淘汰旧消息；单条超长时确定性保留尾部（最新内容）并截断到 `maxInputChars`，最终材料长度不超过上限。
+- **幂等键 = 内容 hash**：`sha256(sourceKind \0 targetFingerprint \0 提取版本 \0 最终材料)` 前 16 位，不再用长度；同长度不同正文不碰撞。
+- **错误码白名单**：只把 `invalid_json` / `invalid_output` / `extractor_no_text` / `session_create_failed` / `missing_api_key` / `generator_empty` / `generator_response_too_large` / `generator_http_<3位>` 写入 run 并回传；其他异常一律折叠为 `generator_failed`，禁止把任意异常文本写入或回传（可能含材料片段）。
 
 ### `autoUpdate`
 
@@ -400,6 +421,42 @@ Scope 在 Server 启动时固定。MCP 客户端不能通过工具参数传入�
 ### `allowCandidateReview`
 
 默认 `false`。只有同时满足 `profile=full` 且 `allowCandidateReview=true` 才注册 `memory_candidate_review`。
+
+### `extraction`（LLM 提取）
+
+默认关闭。启用后 MCP 提供 `memory_extract` 工具：调用方传入文本，服务本地脱敏后交给配置的 openai-compatible 模型，产出待审批候选（只写 `pending`，不直接落正式记忆）。
+
+```jsonc
+{
+  "extraction": {
+    "enabled": true,
+    "allowMcpExtract": true,
+    "provider": {
+      "baseUrl": "https://api.example.com/v1",
+      "model": "your-model",
+      "apiKeyEnv": "YOUR_API_KEY_ENV"
+    },
+    "maxCandidates": 8,
+    "maxInputChars": 60000,
+    "maxOutputTokens": 1024,
+    "timeoutMs": 30000
+  }
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---:|---|
+| `extraction.enabled` | boolean | `false` | 是否启用提取（`memory_extract` 需要它） |
+| `extraction.allowMcpExtract` | boolean | `false` | 是否注册 `memory_extract` 工具 |
+| `extraction.provider.baseUrl` | string | 无 | openai-compatible 接口地址 |
+| `extraction.provider.model` | string | 无 | 模型名 |
+| `extraction.provider.apiKeyEnv` | string | 无 | 存放 API Key 的环境变量名（值只从环境读取，不写配置/日志） |
+| `extraction.maxCandidates` | integer | `8` | 单次最多候选数（1..20） |
+| `extraction.maxInputChars` | integer | `60000` | 材料字符上限（1000..200000） |
+| `extraction.maxOutputTokens` | integer | `1024` | 生成 token 上限（128..8000） |
+| `extraction.timeoutMs` | integer | `30000` | 生成请求超时（1000..120000） |
+
+`memory_extract` 将输入文本作为 `origin='model-report'` 的不可信材料，经 core 的相同安全管线（来源准入 → 脱敏 → 预算裁剪 → 复扫 → 幂等 → 生成 → 校验）后写候选。工具的 prompt 与校验复用 core（`CAPTURE_PROMPT` / `validateCaptureCandidates`），不在 MCP 侧重复实现。**MCP 真实模型端到端尚未验证**（目前只覆盖单测与工具层测试）。
 
 ### 完整示例
 

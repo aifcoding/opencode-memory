@@ -37,12 +37,37 @@ export interface AutoCandidate {
   rule: AutoRule;
 }
 
-export interface AutoCaptureInput {
+/**
+ * 材料来源（谁产生了这段内容）。`role` 是模型对话协议角色，不是作者身份：
+ * 自动化任务、压缩摘要、宿主系统消息都会被投影成 user，必须按来源准入。
+ */
+export const MATERIAL_ORIGINS = [
+  'human',
+  'model',
+  'host',
+  'extension',
+  'model-report',
+  'unknown',
+] as const;
+export type MaterialOrigin = (typeof MATERIAL_ORIGINS)[number];
+
+/** 单段待准入材料。`extension` 表示由本插件自身注入的内容。 */
+export interface CaptureMaterial {
   text: string;
-  /** 上一条用户消息（锚定在当前消息之前）。 */
-  previousUserText?: string;
-  /** 当前消息之前最近的一条助手回复。 */
-  previousAssistantText?: string;
+  origin: MaterialOrigin;
+  /** 宿主消息 id（可用于去重游标，不代表身份可信）。 */
+  messageId?: string;
+  /** 诊断用来源说明，如 automation / compaction / synthetic / system。 */
+  reason?: string;
+}
+
+export interface AutoCaptureInput {
+  /** 当前待判定材料，只有 origin=human 才可能被采集。 */
+  current: CaptureMaterial;
+  /** 上一条用户材料（锚定在当前材料之前）；仅 human 可作为指代解析对象。 */
+  previousUser?: CaptureMaterial;
+  /** 当前材料之前最近的一条助手材料；仅 model 可作为问答配对依据。 */
+  previousAssistant?: CaptureMaterial;
   scope: ScopeRef;
   now?: number;
 }

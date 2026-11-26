@@ -5,3 +5,5 @@ export type {
   MemoryMcpProfile,
   MemoryMcpToolDefinition,
 } from './tools/types.js';
+export { createOpenAiCompatibleGenerator } from './extraction/generator.js';
+export type { OpenAiCompatibleOptions } from './extraction/generator.js';

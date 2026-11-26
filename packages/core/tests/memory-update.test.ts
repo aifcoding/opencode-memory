@@ -107,3 +107,50 @@ test('title-only update bumps revision and respects expectedRevision', async () 
   expect(stale.memory?.title).toBe('新标题');
   manager.close();
 });
+
+test('updating a full-mode pinned memory respects the pin quota', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-quota-'));
+  const manager = createSqliteMemoryManager({ dbPath: join(dir, 'm.db'), pinQuota: 200 });
+  const memory = await manager.storeMemory({
+    title: '固定全文',
+    content: '短内容',
+    scope,
+    origin: 'user',
+    trust: 'high',
+  });
+  await manager.pinMemory({ id: memory.id, pinMode: 'full' });
+  const beforeResult = await manager.readMemory({ id: memory.id, scope });
+  const before = beforeResult.status === 'found' ? beforeResult.memory : undefined;
+  const result = await manager.updateMemory({
+    id: memory.id,
+    content: '这是一段非常长的正文'.repeat(40),
+    scope,
+  });
+  expect(result.status).toBe('quota_exceeded');
+  const afterResult = await manager.readMemory({ id: memory.id, scope });
+  const after = afterResult.status === 'found' ? afterResult.memory : undefined;
+  expect(after?.content).toBe(before?.content);
+  expect(after?.revision).toBe(before?.revision);
+  manager.close();
+});
+
+test('updating a summary-mode pinned memory respects the pin quota', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mem-quota-'));
+  const manager = createSqliteMemoryManager({ dbPath: join(dir, 'm.db'), pinQuota: 200 });
+  const memory = await manager.storeMemory({
+    title: '固定摘要',
+    content: '正文',
+    summary: '短摘要',
+    scope,
+    origin: 'user',
+    trust: 'high',
+  });
+  await manager.pinMemory({ id: memory.id, pinMode: 'summary', summary: '短摘要' });
+  const result = await manager.updateMemory({
+    id: memory.id,
+    summary: '很长的摘要'.repeat(50),
+    scope,
+  });
+  expect(result.status).toBe('quota_exceeded');
+  manager.close();
+});

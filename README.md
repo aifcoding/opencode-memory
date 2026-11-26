@@ -136,13 +136,21 @@ bun run build
   "capture": {
     "enabled": true,
     "onCompaction": true,
-    "agent": "memory-extractor",
+    "target": { "kind": "agent", "name": "memory-extractor" },
     "maxCandidates": 8
   }
 }
 ```
 
+`capture.target` 三选一：`{ "kind": "agent", "name" }`、`{ "kind": "host-default" }`、`{ "kind": "model", "provider", "model" }`。其中 `model` 目标在 OpenCode 适配器**尚未支持**（启动时拒绝），实际可用 `agent` / `host-default`；`agent` 相当于旧字段 `capture.agent`，二者同时出现视为冲突。
+
+v1 宿主没有结构化来源，默认拒绝提取（fail closed，返回「当前宿主不支持来源校验，已跳过提取」）；只有显式设置 `capture.trustRoleAsOrigin: true` 才按协议角色映射 human/model（显式风险开关；v2 有结构化来源时不使用它）。
+
 支持 compaction 成功归档后触发和用户显式调用 `memory_capture` 两种方式。候选固定为 `origin=agent`、`trust=low`、`status=pending`，必须经过 `memory_candidates`、`memory_candidate_read` 和 `memory_candidate_review` 审批。`suggestedDomain`：`code` 适合在 OpenCode 审批，`user` 建议交个人 Agent 管理，`business` 建议交业务 Agent 管理，`uncertain` 请用户判断归属。提取使用空 Session 防递归，并执行凭据、bidi 和不可见 Unicode 扫描。
+
+提取提示词（`CAPTURE_PROMPT`）与候选校验（`validateCaptureCandidates`）在 core（`@aifcoding/memory-core`），任何宿主适配器复用即可，不要复制；适配器只需提供「材料 + 生成器」，详见 [`docs/ADAPTER-CONTRACT.md`](docs/ADAPTER-CONTRACT.md)。
+
+提取管线（core `ExtractionService`）的安全与幂等行为：逐消息脱敏后对拼接结果**再复扫**凭据（命中即 `credential_residual`，防跨消息重组）；预算**硬上限**（单条超长确定性保留尾部并截断到 `maxInputChars`）；幂等键为**内容 hash**（`sha256` 含 `sourceKind`/`targetFingerprint`/提取版本/最终材料，不再用长度）；失败只回传**白名单错误码**（`invalid_json` / `invalid_output` / `extractor_no_text` / `session_create_failed` / `missing_api_key` / `generator_empty` / `generator_response_too_large` / `generator_http_<3位>`），其余折叠为 `generator_failed`。
 
 ## OpenCode 适配器配置
 
@@ -155,7 +163,9 @@ bun run build
 | `autoUpdate` | `boolean` | `true` | 启动时检查并刷新自身 OpenCode 插件缓存；更新后需重启生效 |
 | `capture.enabled` | `boolean` | `false` | 是否启用安全辅助记忆提取 |
 | `capture.onCompaction` | `boolean` | `true` | 启用后是否在 compaction 归档成功后触发 |
-| `capture.agent` | `string` | 无 | 提取 Agent 名称；启用 capture 时必填 |
+| `capture.target` | `object` | 无 | 提取目标三选一：`{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`；`model` 目标在 OpenCode 适配器尚未支持 |
+| `capture.agent` | `string` | 无 | 旧字段，等价 `{kind:"agent",name}`；与 `capture.target` 同时出现视为冲突 |
+| `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 宿主：默认拒绝提取（fail closed）；置 `true` 才按协议角色映射 human/model（显式风险开关） |
 | `capture.maxCandidates` | `number` | `8` | 单次最多生成的候选数量（1..20） |
 | `autoCapture.enabled` | `boolean` | `true` | 是否自动写入高置信信号（`origin=agent`、`trust=low`） |
 | `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` 生成候选但不写入；仍推进会话游标，无决策记录 |
@@ -179,11 +189,48 @@ capture 会增加模型调用成本并处理会话内容；默认关闭，候选
 
 `autoCapture` 与 `autoRecall` 按整个对象覆盖，不逐字段合并；对象内缺省字段使用代码默认值。
 
+### MCP 提取配置与 `memory_extract`
+
+MCP 侧通过 `extraction` 配置块启用 LLM 提取，并提供 `memory_extract` 工具：调用方传入文本，服务本地脱敏后交给配置的 openai-compatible 模型，产出待审批候选（只写 `pending`，不直接落正式记忆）。
+
+```jsonc
+{
+  "extraction": {
+    "enabled": true,
+    "allowMcpExtract": true,
+    "provider": {
+      "baseUrl": "https://api.example.com/v1",
+      "model": "your-model",
+      "apiKeyEnv": "YOUR_API_KEY_ENV"
+    },
+    "maxCandidates": 8,
+    "maxInputChars": 60000,
+    "maxOutputTokens": 1024,
+    "timeoutMs": 30000
+  }
+}
+```
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---:|---|
+| `extraction.enabled` | `boolean` | `false` | 是否启用提取（`memory_extract` 需要它） |
+| `extraction.allowMcpExtract` | `boolean` | `false` | 是否注册 `memory_extract` 工具 |
+| `extraction.provider.baseUrl` | `string` | 无 | openai-compatible 接口地址 |
+| `extraction.provider.model` | `string` | 无 | 模型名 |
+| `extraction.provider.apiKeyEnv` | `string` | 无 | 存放 API Key 的环境变量名（值只从环境读取，不写配置/日志） |
+| `extraction.maxCandidates` | `number` | `8` | 单次最多候选（1..20） |
+| `extraction.maxInputChars` | `number` | `60000` | 材料字符上限（1000..200000） |
+| `extraction.maxOutputTokens` | `number` | `1024` | 生成 token 上限（128..8000） |
+| `extraction.timeoutMs` | `number` | `30000` | 生成请求超时（1000..120000） |
+
+`memory_extract` 将输入文本作为 `origin='model-report'` 的不可信材料：本地脱敏、经相同安全管线后发送，只写候选。工具的 prompt 与校验同样复用 core（`CAPTURE_PROMPT` / `validateCaptureCandidates`），不在 MCP 侧重复实现。**MCP 真实模型端到端尚未验证**（目前只覆盖单测与工具层测试）。
+
 ## 详细文档
 
 - Core API：[`packages/core/README.md`](packages/core/README.md)
 - OpenCode 工具与示例：[`packages/opencode/README.md`](packages/opencode/README.md)
 - MCP 安装、Profile、工具与客户端配置：[`packages/mcp/README.md`](packages/mcp/README.md)
+- 新宿主适配契约：[`docs/ADAPTER-CONTRACT.md`](docs/ADAPTER-CONTRACT.md)
 - 架构设计：[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - 未来规划：[`ROADMAP.md`](ROADMAP.md)
 - 行为规格：[`openspec/specs/`](openspec/specs/)
@@ -224,22 +271,22 @@ capture 会增加模型调用成本并处理会话内容；默认关闭，候选
 
 ### 自动记忆（v2）
 
-> 本地源码为 `@aifcoding/opencode-memory@2.4.0-rc.1`（未发布，依赖 `@aifcoding/memory-core@0.5.0`）；npm 上 `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 是 `2.2.2`。本文描述的是本地源码行为。
+> 本地源码为 `@aifcoding/opencode-memory@2.4.0-rc.2`（未发布，依赖 `@aifcoding/memory-core@0.5.1`）；npm 上 `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 是 `2.2.2`。本文描述的是本地源码行为。
 
 v2 在每个模型请求前执行一次自动记忆流程：
 
 1. **采集**：只从最后一条识别出的真实用户消息提取，不归档助手最终回复。按准入矩阵逐单元判定（不把整段信号继承到每句）：
-   - **直写** `memories`（`origin=agent`、`trust=low`）：E1 明确保存（`记住：…`）、S1 完整配置绑定（`实体.字段=值`，字段限地址/端口/版本/路径且值类型校验通过）、D1 明确选型（`本项目决定采用 X`）。
-   - **写入待审批候选** `memory_candidates`：E2 弱 explicit、S2 不完整结构化事实、D2 其他决策、C2 无法安全定位的纠正。
+   - **直写** `memories`（`origin=agent`、`trust=low`）：S1 新增完整配置绑定；C1 完整纠正更新；E1 显式保存且正文完整解析为配置绑定/决策（含原因）/约定。
+   - **写入待审批候选** `memory_candidates`：E1 其他完整正文、非显式保存的完整决策/约定、完整但无法安全定位的纠正、配置绑定冲突。
    - **更新已有记忆**：仅 C1（必须给出字段与合法新值；唯一匹配一条 `agent/low`、旧值相符、CAS revision 匹配）。其余任何情况都不按标题覆盖，改为候选。
    - **不参与判定**：代码围栏与引用块内的内容；标题只是单个宽泛词的自动条目也不会被自动召回注入。
-   - **低价值候选**：Q 问答对（如「深蓝色」）；**丢弃**：N 无有效单元（含「推」等 1 字符回复）。
+   - **丢弃**：问答对（Q 已删除）、弱关键词（E2 已删除）、不完整结构化（S2 已删除）、纯指代（`记住这个`）、问句/假设/临时安排。
 2. **召回**：默认 `auto`，统一使用 `global/default`，走 FTS + 标题关键词准入（英文词边界、泛词过滤），注入摘要块；`hint` 只注入固定检索提示；缓存按「用户问题 + 最近工具结果」区分。未审批候选不在 `memories` 表，召回与 `memory_recall` 都不返回。
 3. **隔离**：自动记忆调用有外层异常捕获；采集与召回已分别 try/catch，但 Pin transform 在该捕获之外。注入不落库。
 
 辅助提取（LLM）默认关闭；启用后会把经本地脱敏的会话材料发送给所选模型（缺省用宿主默认模型，也可用 `capture.agent` 固定到某个 agent），可能产生费用；脱敏基于正则，不保证识别所有秘密。
 
-限制：单条消息最多 3 条直写；同一 scope 每日最多 20 条新增待审候选；14 天过期未实现；游标按用户文本 hash 去重，相同文本后续输入会跳过；问答对落低价值候选（1 字符/纯确认仍丢弃）；规则面向中文，质量未标定；人工记忆与高信任记忆不会被自动改写；凭据命中片段脱敏后继续（整条仅凭据才放弃），正则不保证识别所有秘密；v1 不启用。完整准入规则见 [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md)。
+限制：单条消息最多 3 条直写；同一 scope 每日最多 20 条新增待审候选；14 天过期未实现；游标按用户文本 hash 去重，相同文本后续输入会跳过；问答对与弱信号已不再产生写入；规则面向中文，质量未标定；人工记忆与高信任记忆不会被自动改写；凭据命中片段脱敏后继续（整条仅凭据才放弃），正则不保证识别所有秘密；v1 不启用。完整准入规则见 [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md)。
 
 ### 会话压缩归档
 

@@ -3,6 +3,7 @@ import type { PluginInput, ToolContext } from '@opencode-ai/plugin';
 import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
 import { ConfigSchema, defaultDbPath, readConfigFile, v1Plugin } from './plugin-v1';
 import { lastUserText, runAutoMemory, type AutoMemoryConfig } from './context/auto-memory';
+import { captureMaterials } from './context/material';
 
 /**
  * v2 宿主适配器。
@@ -56,6 +57,7 @@ function toV1Messages(messages: any[]): any[] {
   });
 }
 
+const seenCompactionEvents = new Set<string>();
 function eventSessionID(event: any): string | undefined {
   return (
     event?.properties?.sessionID ??
@@ -72,6 +74,10 @@ function createV2Client(
 ) {
   return {
     session: {
+      /** v2 结构化消息（带 type/metadata），供来源准入使用。 */
+      async typedContext({ path }: { path: { id: string } }) {
+        return ctx.session.context({ sessionID: path.id });
+      },
       async messages({ path }: { path: { id: string } }) {
         const cached = messageCache.get(path.id);
         if (cached?.length) return { data: cached };
@@ -203,6 +209,16 @@ export async function v2Setup(ctx: V2Context) {
     if (autoManager && autoConfig) {
       try {
         const pinned = await autoManager.getPinnedContext({ scope: globalScope });
+        // 规则采集只吃「结构化的作者身份」：宿主 type/metadata，不信 role。
+        let materials;
+        if (autoConfig.capture.enabled) {
+          try {
+            const typed = await ctx.session.context({ sessionID: event.sessionID });
+            materials = captureMaterials(typed ?? []);
+          } catch (error) {
+            console.error('[opencode-memory] capture materials failed', error);
+          }
+        }
         const outcome = await runAutoMemory({
           manager: autoManager,
           config: autoConfig,
@@ -210,6 +226,7 @@ export async function v2Setup(ctx: V2Context) {
           globalScope,
           sessionID: event.sessionID,
           messages: event.messages,
+          materials,
           excludeIds: pinned.entries.map((entry) => entry.id),
           skipSessionIDs: captureSessions,
         });
@@ -241,14 +258,52 @@ export async function v2Setup(ctx: V2Context) {
     void (async () => {
       try {
         for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-          if (event?.type !== 'session.compaction.ended') continue;
+          // v2 宿主实际发 session.compaction.ended（types.gen.d.ts）；旧名
+          // session.compaction.* 一并兼容。
+          if (
+            typeof event?.type !== 'string' ||
+            !event.type.startsWith('session.compaction.')
+          ) {
+            continue;
+          }
+          if (!event.type.endsWith('.ended')) continue;
           const sessionID = eventSessionID(event);
           if (!sessionID) continue;
+          // 宿主会把同一事件重复广播给多个订阅者，按 event.id 去重。
+          const eventId = typeof event?.id === 'string' ? event.id : '';
+          if (eventId) {
+            if (seenCompactionEvents.has(eventId)) continue;
+            seenCompactionEvents.add(eventId);
+            if (seenCompactionEvents.size > 500) {
+              const oldest = seenCompactionEvents.values().next().value;
+              if (oldest) seenCompactionEvents.delete(oldest);
+            }
+          }
           // 归档必须读压缩后的最新消息，不能命中压缩前的缓存。
           messageCache.delete(sessionID);
-          // v1 的归档逻辑监听 session.compacted；v2 对应 compaction.ended。
+          // v2 的 compaction 消息没有 agent/parts，摘要就在事件 payload 的 data.text 里；
+          // 直接透传给 v1 处理器，避免靠遍历消息猜测。
+          const summaryText = typeof event?.data?.text === 'string' ? event.data.text : undefined;
+          const createdAt =
+            typeof event?.created === 'number'
+              ? event.created
+              : typeof event?.data?.timestamp === 'number'
+                ? event.data.timestamp
+                : Date.now();
           await anyHooks.event({
-            event: { type: 'session.compacted', properties: { sessionID } },
+            event: {
+              type: 'session.compacted',
+              properties: {
+                sessionID,
+                ...(summaryText
+                  ? {
+                      summaryText,
+                      summaryId: `${sessionID}:compaction:${createdAt}`,
+                      summaryCreatedAt: createdAt,
+                    }
+                  : {}),
+              },
+            },
           });
         }
       } catch (error) {

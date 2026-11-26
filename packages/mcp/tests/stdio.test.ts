@@ -101,7 +101,8 @@ describe('MCP stdio protocol', () => {
         transport: { type: 'stdio' },
       }),
     );
-    proc = Bun.spawn(['bun', 'packages/mcp/src/cli.ts', '--config', configPath], {
+    const cliPath = join(import.meta.dir, '..', 'src', 'cli.ts');
+    proc = Bun.spawn(['bun', cliPath, '--config', configPath], {
       stdin: 'pipe',
       stdout: 'pipe',
       stderr: 'pipe',

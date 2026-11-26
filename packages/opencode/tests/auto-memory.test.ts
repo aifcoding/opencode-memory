@@ -14,6 +14,19 @@ const config = {
   recall: { mode: 'hint' as const, maxItems: 3, maxCharacters: 300 },
 };
 
+/** 测试包装：默认把最后一条用户消息当作人工材料；来源映射由 material.test.ts 覆盖。 */
+const run = (input: any) =>
+  runAutoMemory({
+    materials: {
+      current: {
+        text: lastUserText(input.messages) ?? '',
+        origin: 'human' as const,
+        messageId: 'msg_test',
+      },
+    },
+    ...input,
+  });
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'auto-memory-orch-'));
   manager = createSqliteMemoryManager({ dbPath: join(dir, 'memory.db') });
@@ -34,8 +47,8 @@ test('skips our own mem_block when finding the user message', () => {
 });
 
 test('injects hint block and captures once', async () => {
-  const messages = [{ role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] }];
-  const result = await runAutoMemory({
+  const messages = [{ role: 'user', content: [{ type: 'text', text: '记住：testdb.port=3306' }] }];
+  const result = await run({
     manager,
     config,
     scope,
@@ -47,16 +60,87 @@ test('injects hint block and captures once', async () => {
 });
 
 test('does not capture the same message twice', async () => {
-  const messages = [{ role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] }];
-  await runAutoMemory({ manager, config, scope, sessionID: 'ses_a', messages });
-  const second = await runAutoMemory({ manager, config, scope, sessionID: 'ses_a', messages });
+  const messages = [{ role: 'user', content: [{ type: 'text', text: '记住：testdb.port=3306' }] }];
+  await run({ manager, config, scope, sessionID: 'ses_a', messages });
+  const second = await run({ manager, config, scope, sessionID: 'ses_a', messages });
 
   expect(second.captured).toBe(0);
   expect(await manager.listMemories({ scope })).toHaveLength(1);
 });
 
-test('skips capture sessions', async () => {
+test('automation materials are never captured as user statements', async () => {
+  const text = '检查刚才的 docker 部署是否成功。背景：finance/ad-svr 分支已推。请按顺序验证:';
   const result = await runAutoMemory({
+    manager,
+    config,
+    scope,
+    sessionID: 'ses_automation',
+    messages: [{ role: 'user', content: [{ type: 'text', text }] }],
+    materials: { current: { text, origin: 'host', reason: 'automation' } },
+  });
+
+  expect(result.captured).toBe(0);
+  expect(result.proposed).toBe(0);
+  expect(result.captureSkipped).toBe('non-human-origin:host');
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('missing materials skip capture without consuming the cursor', async () => {
+  const text = '记住：testdb.port=3306';
+  const messages = [{ role: 'user', content: [{ type: 'text', text }] }];
+
+  const skipped = await runAutoMemory({
+    manager,
+    config,
+    scope,
+    sessionID: 'ses_missing_materials',
+    messages,
+  });
+  expect(skipped.captured).toBe(0);
+  expect(skipped.captureSkipped).toBe('materials-missing');
+
+  const recovered = await runAutoMemory({
+    manager,
+    config,
+    scope,
+    sessionID: 'ses_missing_materials',
+    messages,
+    materials: { current: { text, origin: 'human', messageId: 'msg_h1' } },
+  });
+  expect(recovered.captured).toBe(1);
+});
+
+test('an automation turn does not re-capture the previous human message', async () => {
+  const text = '记住：probereplay.endpoint=http://127.0.0.1:18111';
+  const humanMessages = [{ role: 'user', content: [{ type: 'text', text }] }];
+  const human = { current: { text, origin: 'human' as const, messageId: 'msg_h1' } };
+
+  const first = await runAutoMemory({
+    manager,
+    config,
+    scope,
+    sessionID: 'ses_replay',
+    messages: humanMessages,
+    materials: human,
+  });
+  expect(first.captured).toBe(1);
+
+  // 自动化注入改变了召回正文，但采集材料仍是同一条人工消息 → 不重采。
+  const result = await runAutoMemory({
+    manager,
+    config,
+    scope,
+    sessionID: 'ses_replay',
+    messages: [...humanMessages, { role: 'user', content: [{ type: 'text', text: '检查部署失败原因' }] }],
+    materials: human,
+  });
+  expect(result.captured).toBe(0);
+  expect(await manager.listMemories({ scope })).toHaveLength(1);
+});
+
+test('skips capture sessions', async () => {
+  const result = await run({
     manager,
     config,
     scope,
@@ -74,13 +158,13 @@ test('does not recall the memory written in the same pass', async () => {
     ...config,
     recall: { ...config.recall, mode: 'auto' as const },
   };
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config: autoConfig,
     scope,
     sessionID: 'ses_self',
     messages: [
-      { role: 'user', content: [{ type: 'text', text: '记住 probe-self 地址 http://127.0.0.1:18099' }] },
+      { role: 'user', content: [{ type: 'text', text: '记住：probeself.endpoint=http://127.0.0.1:18099' }] },
     ],
   });
 
@@ -89,7 +173,7 @@ test('does not recall the memory written in the same pass', async () => {
 });
 
 test('auto mode injects recalled memory on reference request', async () => {
-  await runAutoMemory({
+  await run({
     manager,
     config,
     scope,
@@ -101,7 +185,7 @@ test('auto mode injects recalled memory on reference request', async () => {
     ...config,
     recall: { ...config.recall, mode: 'auto' as const },
   };
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config: autoConfig,
     scope,
@@ -116,7 +200,7 @@ test('auto mode injects recalled memory on reference request', async () => {
 });
 
 test('skips subagent sessions entirely', async () => {
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config,
     scope,
@@ -144,7 +228,7 @@ test('hint mode ignores maxCharacters', async () => {
     capture: { ...config.capture, enabled: false },
     recall: { mode: 'hint' as const, maxItems: 3, maxCharacters: 50 },
   };
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config: hintConfig,
     scope,
@@ -177,7 +261,7 @@ test('same-turn update is not echoed but other related memories still recall', a
     ...config,
     recall: { ...config.recall, mode: 'off' as const },
   };
-  const preset = await runAutoMemory({
+  const preset = await run({
     manager,
     config: captureOnly,
     scope,
@@ -204,7 +288,7 @@ test('same-turn update is not echoed but other related memories still recall', a
     },
   ];
   const autoConfig = { ...config, recall: { ...config.recall, mode: 'auto' as const } };
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config: autoConfig,
     scope,
@@ -236,13 +320,13 @@ test('capture failure does not block recall', async () => {
   });
   const autoConfig = { ...config, recall: { ...config.recall, mode: 'auto' as const } };
 
-  const result = await runAutoMemory({
+  const result = await run({
     manager: failingCapture,
     config: autoConfig,
     scope,
     sessionID: 'ses_capture_fail',
     messages: [
-      { role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] },
+      { role: 'user', content: [{ type: 'text', text: '记住：testdb.port=3306' }] },
     ],
   });
 
@@ -259,13 +343,13 @@ test('recall failure does not undo capture', async () => {
   });
   const autoConfig = { ...config, recall: { ...config.recall, mode: 'auto' as const } };
 
-  const result = await runAutoMemory({
+  const result = await run({
     manager: failingRecall,
     config: autoConfig,
     scope,
     sessionID: 'ses_recall_fail',
     messages: [
-      { role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] },
+      { role: 'user', content: [{ type: 'text', text: '记住：testdb.port=3306' }] },
     ],
   });
 
@@ -287,28 +371,28 @@ test('caches recall per session, text, and tool output', async () => {
     recall: { ...config.recall, mode: 'auto' as const },
   };
   const messages = [{ role: 'user', content: [{ type: 'text', text: '上次那个 test db 是什么' }] }];
-  const run = (sessionID: string, input = messages) =>
+  const runOnce = (sessionID: string, input = messages) =>
     runAutoMemory({ manager: counted, config: recallOnly, scope, sessionID, messages: input });
 
-  const first = await run('ses_cache');
+  const first = await runOnce('ses_cache');
   expect(recallCalls).toBe(2); // project + global 两个 scope 各查一次
-  const second = await run('ses_cache');
+  const second = await runOnce('ses_cache');
   expect(recallCalls).toBe(2);
   expect(second.recalled).toBe(first.recalled);
 
-  await run('ses_cache', [
+  await runOnce('ses_cache', [
     ...messages,
     { role: 'tool', content: [{ type: 'text', text: 'tool result A' }] },
   ]);
   expect(recallCalls).toBe(4);
 
-  await run('ses_cache', [
+  await runOnce('ses_cache', [
     ...messages,
     { role: 'tool', content: [{ type: 'text', text: 'tool result B' }] },
   ]);
   expect(recallCalls).toBe(6);
 
-  await run('ses_cache_other');
+  await runOnce('ses_cache_other');
   expect(recallCalls).toBe(8);
 });
 
@@ -334,7 +418,7 @@ test('excludeIds removes only the excluded memory', async () => {
     recall: { ...config.recall, mode: 'auto' as const },
   };
 
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config: recallOnly,
     scope,
@@ -383,7 +467,7 @@ test('dedupes the same id returned by multiple scopes', async () => {
     recall: { ...config.recall, mode: 'auto' as const },
   };
 
-  const result = await runAutoMemory({
+  const result = await run({
     manager: duplicated,
     config: recallOnly,
     scope,
@@ -411,7 +495,7 @@ test('empty, blank, or synthetic-only input is ignored', async () => {
 
   for (const messages of cases) {
     expect(lastUserText(messages)).toBeUndefined();
-    const result = await runAutoMemory({
+    const result = await run({
       manager,
       config: autoConfig,
       scope,
@@ -442,13 +526,13 @@ test('hint mode neither stores nor queries memory', async () => {
     recall: { mode: 'hint' as const, maxItems: 3, maxCharacters: 300 },
   };
 
-  const result = await runAutoMemory({
+  const result = await run({
     manager: counted,
     config: hintConfig,
     scope,
     sessionID: 'ses_hint_only',
     messages: [
-      { role: 'user', content: [{ type: 'text', text: '记住 test db 10.0.0.5:3306' }] },
+      { role: 'user', content: [{ type: 'text', text: '记住：testdb.port=3306' }] },
     ],
   });
 
@@ -468,7 +552,7 @@ test('capture and recall switches are independent', async () => {
     recall: { ...config.recall, mode: 'off' as const },
   };
 
-  const off = await runAutoMemory({
+  const off = await run({
     manager,
     config: bothOff,
     scope,
@@ -483,7 +567,7 @@ test('capture and recall switches are independent', async () => {
     capture: { ...config.capture, enabled: true },
     recall: { ...config.recall, mode: 'off' as const },
   };
-  const captured = await runAutoMemory({
+  const captured = await run({
     manager,
     config: captureOnly,
     scope,
@@ -520,7 +604,7 @@ test('reports pending candidates without injecting their content', async () => {
     });
   });
 
-  const result = await runAutoMemory({
+  const result = await run({
     manager,
     config: { ...config, capture: { ...config.capture, enabled: false } },
     scope,
