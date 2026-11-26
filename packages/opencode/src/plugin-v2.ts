@@ -23,6 +23,8 @@ type V2Context = {
   };
   session: {
     hook: (name: string, fn: (event: any) => Promise<void> | void) => Promise<unknown> | unknown;
+    update: (input: { sessionID: string; permissions?: unknown; title?: string }) => Promise<unknown>;
+    switchModel: (input: { sessionID: string; model: unknown }) => Promise<unknown>;
     context: (input: { sessionID: string }) => Promise<any[]>;
     create: (input: { title?: string }) => Promise<any>;
     switchAgent: (input: { sessionID: string; agent: string }) => Promise<unknown>;
@@ -84,6 +86,12 @@ function createV2Client(
         const messages = await ctx.session.context({ sessionID: path.id });
         return { data: toV1Messages(messages) };
       },
+      async update({ path, body }: { path: { id: string }; body?: any }) {
+        return ctx.session.update({ sessionID: path.id, ...(body ?? {}) });
+      },
+      async switchModel({ path, body }: { path: { id: string }; body?: any }) {
+        return ctx.session.switchModel({ sessionID: path.id, model: body?.model });
+      },
       async create() {
         const session = await ctx.session.create({ title: 'memory-capture' });
         if (session?.id) captureSessions.add(session.id);
@@ -96,18 +104,39 @@ function createV2Client(
         }
         // v2 的 session.prompt 返回 inbox 用户消息，不是助手回复；
         // 临时生成用 session.generate，正好满足“全新空会话提取”。
-        const generated = await ctx.session.generate({ sessionID: path.id, prompt: text });
+        // 超时短于租约（120s）；超时先中断再返回，避免压缩事件被永久挂住。
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('generator_timeout')), 60_000);
+        });
+        let generated: { text: string };
+        try {
+          generated = await Promise.race([
+            ctx.session.generate({ sessionID: path.id, prompt: text }),
+            timeout,
+          ]);
+        } catch (error) {
+          if (error instanceof Error && error.message === 'generator_timeout') {
+            await (ctx.session as any).interrupt?.({ sessionID: path.id }).catch?.(() => undefined);
+          }
+          throw error;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
+        if (typeof generated.text !== 'string') throw new Error('extractor_no_text');
+        if (generated.text.length > 400_000) throw new Error('generator_response_too_large');
         return { data: { parts: [{ type: 'text', text: generated.text }] } };
       },
       async delete({ path }: { path: { id: string } }) {
-        captureSessions.delete(path.id);
+        // 删除成功后才移除隔离标记；失败时保留标记，避免残留会话被自动采集。
         await ctx.session.remove({ sessionID: path.id });
+        captureSessions.delete(path.id);
         return { data: true };
       },
     },
     app: {
       async log({ body }: { body?: any }) {
-        console.error(`[opencode-memory] ${body?.message ?? ''}`, body?.extra ?? '');
+        console.error(`[agent-memory] ${body?.message ?? ''}`, body?.extra ?? '');
       },
     },
     tui: {
@@ -216,7 +245,7 @@ export async function v2Setup(ctx: V2Context) {
             const typed = await ctx.session.context({ sessionID: event.sessionID });
             materials = captureMaterials(typed ?? []);
           } catch (error) {
-            console.error('[opencode-memory] capture materials failed', error);
+            console.error('[agent-memory] capture materials failed', error);
           }
         }
         const outcome = await runAutoMemory({
@@ -248,7 +277,7 @@ export async function v2Setup(ctx: V2Context) {
           });
         }
       } catch (error) {
-        console.error('[opencode-memory] auto memory failed', error);
+        console.error('[agent-memory] auto memory failed', error);
       }
     }
   });
@@ -308,7 +337,7 @@ export async function v2Setup(ctx: V2Context) {
         }
       } catch (error) {
         if (!controller.signal.aborted) {
-          console.error('[opencode-memory] v2 event bridge failed', error);
+          console.error('[agent-memory] v2 event bridge failed', error);
         }
       }
     })();

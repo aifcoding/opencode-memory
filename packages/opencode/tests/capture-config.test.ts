@@ -10,6 +10,9 @@ test('capture works without a configured agent (host default model)', async () =
   let switchedAgent: string | undefined;
   const client: any = {
     session: {
+      async typedContext() {
+        return [{ type: 'user', id: 'u1', text: 'atlas 仓库统一放 /srv/atlas，已确认' }];
+      },
       async messages() {
         return {
           data: [
@@ -21,6 +24,7 @@ test('capture works without a configured agent (host default model)', async () =
         };
       },
       async create() { return { data: { id: 'child' } }; },
+      async update() { return { data: true }; },
       async prompt({ body }: any) {
         promptCalls += 1;
         switchedAgent = body?.agent;
@@ -104,31 +108,30 @@ const fakeClient = () => {
   return { client, state };
 };
 
-test('model target is rejected by the OpenCode adapter for now', async () => {
+test('model target is migrated to capture.model and accepted', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cap-target-'));
   const { client } = fakeClient();
+  await (v1Plugin as any)({ client }, {
+    dbPath: join(dir, 'm.db'),
+    capture: { enabled: true, target: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' } },
+  });
+});
+
+test('legacy agent target is rejected with a migration error', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cap-target-'));
+  const { client, state } = fakeClient();
   await expect(
     (v1Plugin as any)({ client }, {
       dbPath: join(dir, 'm.db'),
-      capture: { enabled: true, target: { kind: 'model', provider: 'deepseek', model: 'deepseek-chat' } },
+      capture: {
+        enabled: true,
+        target: { kind: 'agent', name: 'memory-capture' },
+        trustRoleAsOrigin: true,
+        maxCandidates: 2,
+      },
     }),
-  ).rejects.toThrow(/model target is not supported/);
-});
-
-test('agent target pins the extraction agent', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'cap-target-'));
-  const { client, state } = fakeClient();
-  const hooks: any = await (v1Plugin as any)({ client }, {
-    dbPath: join(dir, 'm.db'),
-    capture: {
-      enabled: true,
-      target: { kind: 'agent', name: 'memory-capture' },
-      trustRoleAsOrigin: true,
-      maxCandidates: 2,
-    },
-  });
-  await hooks.tool.memory_capture.execute({}, { sessionID: 's', messageID: 'm' });
-  expect(state.switchedAgent).toBe('memory-capture');
+  ).rejects.toThrow(/已弃用/);
+  expect(state.switchedAgent).toBeUndefined();
 });
 
 test('target and legacy agent conflict is rejected', async () => {
@@ -139,5 +142,5 @@ test('target and legacy agent conflict is rejected', async () => {
       dbPath: join(dir, 'm.db'),
       capture: { enabled: true, agent: 'build', target: { kind: 'agent', name: 'memory-capture' } },
     }),
-  ).rejects.toThrow(/conflicts/);
+  ).rejects.toThrow(/已弃用/);
 });

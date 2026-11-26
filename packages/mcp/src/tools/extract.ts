@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { CAPTURE_PROMPT } from '@aifcoding/memory-core';
+import { composeInstructions, readInstructionsFile } from '@aifcoding/memory-core';
 import type { MemoryMcpToolDefinition } from './types.js';
 import { toolResult } from '../render/tool-result.js';
 
@@ -20,6 +20,16 @@ export const extractTools: MemoryMcpToolDefinition[] = [
       if (!ctx.extraction) {
         return toolResult('memory_extract', ctx.scope, { status: 'disabled' }, 'Extraction is not enabled.');
       }
+      let instructions: string;
+      try {
+        const userRules = ctx.extractionInstructionsFile
+          ? readInstructionsFile(ctx.extractionInstructionsFile)
+          : undefined;
+        instructions = composeInstructions(userRules);
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'instructions_unreadable';
+        return toolResult('memory_extract', ctx.scope, { status: 'failed', reason: code }, `提取未执行：${code}`);
+      }
       const outcome = await ctx.extraction.extract({
         scope: ctx.scope,
         sourceKind: 'model-report',
@@ -29,7 +39,7 @@ export const extractTools: MemoryMcpToolDefinition[] = [
         messages: [
           { id: 'model-report', role: 'unknown', text: input.text, synthetic: false, origin: 'model-report' },
         ],
-        instructions: CAPTURE_PROMPT,
+        instructions,
         targetFingerprint: ctx.extractionFingerprint ?? 'mcp',
       });
       return toolResult(

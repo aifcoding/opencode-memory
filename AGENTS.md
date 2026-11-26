@@ -7,7 +7,7 @@ opencode-memory：给 opencode 用的本地持久记忆插件。三层记忆（�
 - 运行时是 opencode 内嵌 Bun（非系统 Node）：只能用 `bun:sqlite` 与纯 JS/WASM 依赖
 - 中文检索用 jieba-wasm + SQLite FTS5
 - 数据默认存 `~/.local/share/opencode/memory/memory.db`（与 opencode 会话库同根）
-- 配置读 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`）
+- 配置读 `~/.config/opencode/agent-memory.jsonc`（或 `.json`；旧名 `opencode-memory.jsonc/.json` 兼容读取）
 
 ## 文档纪律
 

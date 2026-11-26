@@ -75,7 +75,7 @@
 
 ### Requirement: 配置
 
-配置 SHALL 从 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`）读取，`.jsonc` 优先；文件不存在可忽略，读取或解析错误必须显式报错。文件配置与插件 options 走同一 Zod Schema，options 覆盖文件配置；`dbPath` 须为绝对路径，`pinQuota` 须为正整数。
+配置 SHALL 从 `~/.config/opencode/agent-memory.jsonc`（或 `.json`）读取，`.jsonc` 优先；旧名 `opencode-memory.jsonc/.json` SHALL 仍可读取（兼容，不自动迁移）；文件不存在可忽略，读取或解析错误必须显式报错。文件配置与插件 options 走同一 Zod Schema，options 覆盖文件配置；`dbPath` 须为绝对路径，`pinQuota` 须为正整数。
 
 #### Scenario: 配置职责分离
 

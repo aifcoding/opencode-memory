@@ -27,6 +27,7 @@ export interface MemoryMcpToolContext {
   /** 仅在启用提取且允许 MCP 手动提取时提供。 */
   extraction?: ExtractionService;
   extractionFingerprint?: string;
+  extractionInstructionsFile?: string;
 }
 export interface MemoryMcpToolDefinition {
   name: string;

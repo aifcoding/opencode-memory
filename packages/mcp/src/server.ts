@@ -26,6 +26,7 @@ export interface MemoryMcpServerOptions {
   allowExtraction?: boolean;
   extraction?: ExtractionService;
   extractionFingerprint?: string;
+  extractionInstructionsFile?: string;
   recall?: Partial<MemoryMcpRecallConfig>;
 }
 
@@ -97,6 +98,7 @@ export function createMemoryMcpServer(options: MemoryMcpServerOptions): McpServe
     recall,
     extraction: options.extraction,
     extractionFingerprint: options.extractionFingerprint,
+    extractionInstructionsFile: options.extractionInstructionsFile,
   };
   const server = new McpServer({ name: 'memory-mcp', version: '0.2.0' });
   for (const definition of registerAllowed(

@@ -31,6 +31,8 @@ export const MemoryMcpConfigSchema = z
             apiKeyEnv: z.string().min(1),
           })
           .strict(),
+        /** 用户规则 md（本地绝对路径）；未配置时用随包默认规则。 */
+        instructionsFile: z.string().min(1).optional(),
         maxCandidates: z.number().int().min(1).max(20).default(8),
         maxInputChars: z.number().int().min(1000).max(200000).default(60000),
         maxOutputTokens: z.number().int().min(128).max(8000).default(1024),

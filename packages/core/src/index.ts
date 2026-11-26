@@ -164,3 +164,12 @@ export type {
   CaptureType,
   CaptureDomain,
 } from './extraction/validate.js';
+
+export {
+  DEFAULT_RULES,
+  INSTRUCTIONS_MAX_CHARS,
+  PROGRAM_CONSTRAINTS,
+  composeInstructions,
+  instructionsHash,
+  readInstructionsFile,
+} from './extraction/instructions.js';

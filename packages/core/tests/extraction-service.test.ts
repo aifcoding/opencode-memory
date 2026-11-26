@@ -80,7 +80,7 @@ test('invalid json fails without writing candidates', async () => {
   manager.close();
 });
 
-test('candidates without evidence or with unknown evidence are dropped', async () => {
+test('candidates without evidence or with unknown evidence are kept (quality moved to prompt)', async () => {
   const manager = fresh();
   const generator = {
     async generate() {
@@ -96,7 +96,7 @@ test('candidates without evidence or with unknown evidence are dropped', async (
   };
   const result = await service(manager, generator).extract(request([message('u1', 'atlas 路径 /srv/atlas 已确认')]));
   expect(result.status).toBe('completed');
-  expect(result.candidateCount).toBe(0);
+  expect(result.candidateCount).toBe(2);
   manager.close();
 });
 
@@ -232,5 +232,26 @@ test('unknown generator errors are folded to a safe code', async () => {
   );
   expect(result.status).toBe('failed');
   expect(result.reason).toBe('generator_failed');
+  await manager.close();
+});
+
+test('credentials in the instructions are rejected before generation', async () => {
+  const manager = fresh();
+  let called = 0;
+  const generator = {
+    async generate() {
+      called += 1;
+      return { text: '{"candidates":[]}' };
+    },
+  };
+  const svc = service(manager, generator);
+  const result = await svc.extract(
+    request([message('u1', 'atlas 路径 /srv/atlas 已确认')], {
+      instructions: '规则：password=abc123 不要外发',
+    }),
+  );
+  expect(result.status).toBe('skipped');
+  expect(result.reason).toBe('credential_in_instructions');
+  expect(called).toBe(0);
   await manager.close();
 });

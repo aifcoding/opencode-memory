@@ -45,6 +45,7 @@ try {
     extractionFingerprint: config.extraction
       ? `${config.extraction.provider.baseUrl}|${config.extraction.provider.model}`
       : undefined,
+    extractionInstructionsFile: config.extraction?.instructionsFile,
     defaultLimit: config.limits?.defaultLimit ?? 10,
     maxLimit: config.limits?.maxLimit ?? 50,
     previewLength: config.limits?.previewLength ?? 500,

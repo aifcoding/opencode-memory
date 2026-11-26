@@ -1,30 +1,8 @@
-/**
- * 通用提取提示词（capture-v2）。
- * 任何宿主适配器都直接复用这里，不要在适配器里复制文案。
- */
-export const CAPTURE_PROMPT = `capture-v2: 只输出 JSON：{"candidates":[...]}，不要 Markdown、不要解释、不要复述指令。
-没有值得长期保存的内容时，输出 {"candidates":[]}（空数组是合法且常见的结果）。
-
-仅收录（满足其一）：
-- 稳定的用户偏好/约定（"以后都…"、"不要…"）；
-- 已确认的决策（含原因或代价）；
-- 可复用的根因/解决方案；
-- 反复出现的流程/检查项；
-- 明确的配置、仓库地址、端口、版本等客观事实。
-
-禁止收录：
-- 一次性任务、临时错误、调试过程中的中间状态；
-- 未确认的推测、助手的建议或假设；
-- 闲聊、确认语、追问、进度复述；
-- 工具调用/输出原文、注入的记忆块、凭据（密码/token/密钥）；
-- 只对本次会话有意义的上下文。
-
-每条候选要求：
-- title：≤30 字，具体可检索，不要只写「配置」「方案」这类泛词；
-- content：写清「是什么 + 何时适用 + 依据」，≤500 字；
-- evidenceQuote：从会话材料中**原样摘录**一段 ≤120 字的话作为依据；找不到原文就不要输出该条；
-- type：preference|fact|decision|solution|convention；suggestedDomain：code|user|business|uncertain；
-- 不得改写用户原意，不得把建议/假设写成已确认事实；
-- 同义内容只保留一条；与已有记忆重复的不要输出。`;
+import { composeInstructions } from './instructions.js';
 
 export const CAPTURE_EXTRACTOR_VERSION = 'extraction-v1';
+
+/** 默认组合（用户未配置规则文件时使用）。 */
+export const CAPTURE_PROMPT = composeInstructions();
+
+export { composeInstructions } from './instructions.js';

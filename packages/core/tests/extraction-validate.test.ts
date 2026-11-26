@@ -22,7 +22,7 @@ test('keeps a well-formed candidate with matching evidence', () => {
   expect(result.filtered).toHaveLength(0);
 });
 
-test('drops short content, question-only content and unknown evidence', () => {
+test('keeps short, question-like and unknown-evidence candidates (quality moved to prompt)', () => {
   const result = validateCaptureCandidates(
     [
       candidate({ content: '太短' }),
@@ -32,14 +32,14 @@ test('drops short content, question-only content and unknown evidence', () => {
     material,
     8,
   );
-  expect(result.candidates).toHaveLength(0);
-  expect(result.filtered.length).toBe(3);
+  expect(result.candidates).toHaveLength(3);
+  expect(result.filtered).toHaveLength(0);
 });
 
-test('deduplicates same title within one batch', () => {
+test('same-title duplicates are structural-valid and kept (dedupe moved to prompt)', () => {
   const result = validateCaptureCandidates([candidate(), candidate()], material, 8);
-  expect(result.candidates).toHaveLength(1);
-  expect(result.filtered).toContain('duplicate title in batch');
+  expect(result.candidates).toHaveLength(2);
+  expect(result.filtered).toHaveLength(0);
 });
 
 test('respects maxCandidates after validation', () => {

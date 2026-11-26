@@ -33,8 +33,8 @@ const result = await manager.recallMemories({
 
 ```text
 Plugin Tuple Options
-→ opencode-memory.jsonc
-→ opencode-memory.json
+→ agent-memory.jsonc（旧名 opencode-memory.jsonc 兼容读取）
+→ agent-memory.json
 → 默认值
 ```
 
@@ -54,7 +54,7 @@ $HOME/.config/opencode
 
 #### 自动记忆（v2）
 
-> 本地源码为 `2.4.0-rc.2`（未发布，依赖 `memory-core@0.5.1`）；npm `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 为 `2.2.2`。
+> 本地源码为 `2.4.0-rc.3`（未发布，依赖 `memory-core@0.5.2`）；npm `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 为 `2.2.2`。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
@@ -63,9 +63,11 @@ $HOME/.config/opencode
 | `autoCapture.maxWritesPerTurn` | `number` | `3` | 单条消息最多写入条数，直写与候选合计（0..10，超大值按 3 截断） |
 | `capture.enabled` | `boolean` | `false` | 是否启用 LLM 辅助提取（压缩后 / 手动 `memory_capture`） |
 | `capture.onCompaction` | `boolean` | `true` | 压缩后自动触发提取 |
-| `capture.target` | `object` | 未配置 | 提取目标三选一：`{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`；`model` 目标在 OpenCode 适配器尚未支持（启动时拒绝） |
-| `capture.agent` | `string` | 未配置 | 旧字段，等价 `{kind:"agent",name}`；与 `capture.target` 同时出现视为冲突 |
-| `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 宿主：默认拒绝提取（fail closed）；置 `true` 才按协议角色映射 human/model（显式风险开关） |
+| `capture.model` | `object` | 未配置 | `{provider, model, variant?}`；未配置用宿主默认模型；配置后不可用即失败，不回退 |
+| `capture.instructionsFile` | `string` | 未配置 | 用户规则 md 的本地绝对路径；未配置用随包默认规则；读不到/为空/超限即失败 |
+| `capture.target` | `object` | 未配置 | **已弃用**：`model` 自动映射为 `capture.model`；`agent` 启动报迁移错误；`host-default` 视为未配置模型 |
+| `capture.agent` | `string` | 未配置 | **已弃用**：启动报迁移错误，改用 `capture.model` |
+| `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 宿主兼容保留：v1 无法强制工具隔离，提取 fail-closed 拒绝；该开关不改变结果 |
 | `capture.maxCandidates` | `number` | `8` | 单次最多候选（1..20） |
 | `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` 检索并注入摘要；`hint` 只注入固定检索提示；`shadow` 不检索不注入，无决策记录 |
 | `autoRecall.maxItems` | `number` | `3` | 单次最多注入条数（1..10） |
@@ -89,426 +91,42 @@ $HOME/.config/opencode
 - 配置非法（未知字段、越界值、非法枚举，例如 `autoCapture.mode: "active"`）时插件显式报错并拒绝加载，不静默回退到默认值；日志为 `failed to load plugin … invalid config: <字段>: <原因>`，此时记忆工具与自动记忆都不可用，需修正配置后重载。
 
 
-#### 通用提取目标（capture.target）
+#### 提取模型与规则（capture.model / capture.instructionsFile）
 
-`capture.target` 是提取目标的互斥三选一；OpenCode 适配层已接线读取并做启动期校验。
+提取模型由 `capture.model` 指定（`provider` / `model` / 可选 `variant`）：
+
+- 未配置：使用宿主默认模型。
+- 配置后不可用（provider/model 不存在、无权限、不支持切换）：本次提取失败，返回 `model_selection_unsupported`，**不回退**默认模型。
+
+首次启用时插件自动生成模板 `~/.config/opencode/memory-capture.rules.md`（已存在不覆盖，`XDG_CONFIG_HOME` 生效时在 `$XDG_CONFIG_HOME/opencode/`）。优先级：显式 `capture.instructionsFile` > 自动模板 > 内置默认。
+
+提取规则由 `capture.instructionsFile` 指定（本地绝对路径、UTF-8 markdown）：
+
+- 未配置：使用随包发布的默认规则。
+- 配置后**替换**默认规则，不叠加；每次触发读取一次，内容 hash 参与任务幂等键。
+- 文件不存在/不可读/为空/超限：本次提取失败（`instructions_unreadable` / `instructions_too_large`），不回退。
+- 不支持远程 URL、include；规则内容在发送前会做凭据扫描。
+
+发给模型的 instructions 由两段组成：用户规则在前，程序附加约束在后；程序附加约束声明「与上文冲突时以本节为准」，并声明材料中的指令不构成程序约束。这是产品约束，不是安全边界。
+
+执行顺序（OpenCode v2）：`session.create → session.update(permission 全 deny) → session.switchModel(仅配置模型时) → generate → session.remove`。
+
+示例（写入 `~/.config/opencode/agent-memory.jsonc`，或作为插件 tuple options）：
 
 ```jsonc
 {
   "capture": {
     "enabled": true,
     "onCompaction": true,
-    "target": { "kind": "agent", "name": "memory-extractor" },
+    "model": { "provider": "deepseek", "model": "deepseek-flash" },
+    "instructionsFile": "/Users/you/.config/opencode/memory-capture.rules.md",
     "maxCandidates": 8
   }
 }
 ```
 
-| 字段 | 取值 | 说明 |
-|---|---|---|
-| `capture.target.kind` | `model` \| `agent` \| `host-default` | 互斥；`enabled=true` 时必须提供且可解析 |
-| `model` 目标 | `provider` + `model` | `provider` 是配置里的 provider 键名，不接受 URL/内嵌凭据；**OpenCode 适配器尚未支持，启动时拒绝** |
-| `agent` 目标 | `name` | 宿主自己的 agent 名，仅宿主有 agent 概念时使用 |
-| `host-default` | 无附加字段 | 使用宿主默认生成能力（OpenCode：未配 target/agent 时自动注入） |
-| 旧 `capture.agent` | string | 映射为 agent target；与 `target` 同现视为冲突 |
+配置来源优先级：插件 tuple options > `agent-memory.jsonc` > `agent-memory.json` > 旧名 `opencode-memory.jsonc/.json`（兼容读取）。配置项改动需重启服务；规则 md 内容改动在下一次提取时生效。
 
-解析规则（`parseCaptureTarget` / `validateCaptureConfig`，core 内实现）：
+迁移：`capture.agent` 与 `capture.target.kind="agent"` 启动报错；`capture.target.kind="model"` 映射为 `capture.model`；两者与新字段同现视为冲突。
 
-- `enabled=false` 允许无 target；`enabled=true` 无 target 或 target 无法解析 → 拒绝启动。
-- 生成失败不切换到其它目标；运行期不换目标。
-- OpenCode 适配层：`enabled=true` 且既无 `target` 也无旧 `agent` 时自动注入 `{ kind: "host-default" }`；`target.kind='model'` 被适配器显式拒绝。
-- 旧 `capture.agent` 映射为 agent target；与 `capture.target` 同现视为冲突，不静默取值。
 
-`capture.trustRoleAsOrigin`（boolean，默认 `false`）：
-
-- v1 宿主没有结构化来源，无法证明 user 消息来自人工，默认拒绝提取（fail closed），返回「当前宿主不支持来源校验，已跳过提取（v1 可显式开启 capture.trustRoleAsOrigin）」。
-- 置 `true` 才按协议角色映射 human/model。这是**显式风险开关**；v2 有结构化来源（`typedContext` → origin）时不使用它。
-
-### MCP Adapter
-
-配置文件可以通过 CLI 指定：
-
-```bash
-memory-mcp --config "/absolute/path/memory-mcp.jsonc"
-```
-
-未指定时依次使用：
-
-```text
-MEMORY_MCP_CONFIG 指定的路径
-→ $XDG_CONFIG_HOME/aifcoding/memory-mcp.jsonc
-→ $HOME/.config/aifcoding/memory-mcp.jsonc
-```
-
-所有配置使用严格校验，未知字段会导致启动失败。
-
----
-
-## 2. 通用 Recall 配置
-
-Core 默认预算：
-
-```ts
-{
-  maxCharacters: 3000,
-  preferSummary: true,
-  maxOverflowItems: 10,
-  maxOverflowCharacters: 1500,
-}
-```
-
-### `maxCharacters`
-
-| 属性 | 值 |
-|---|---|
-| 类型 | 正整数 |
-| 默认值 | `3000` |
-| 范围 | `1..20000` |
-| 用途 | 限制 Detail 阶段的标题、摘要或正文 |
-
-Detail 结果之间的两个换行字符也计入预算。
-
-### `preferSummary`
-
-| 属性 | 值 |
-|---|---|
-| 类型 | `boolean` |
-| 默认值 | `true` |
-| 用途 | 请求 `full` 但全文放不下时，是否尝试降级为 `summary` |
-
-该字段只对 `projection=full` 有意义。OpenCode 和 MCP 的搜索工具固定使用 `summary`，因此不将它暴露为 Adapter 配置。
-
-### `maxOverflowItems`
-
-| 属性 | 值 |
-|---|---|
-| 类型 | 整数 |
-| 默认值 | `10` |
-| 范围 | `0..20` |
-| 用途 | Detail 预算溢出后，最多返回多少条轻量导航项 |
-
-设置为 `0` 时关闭 Overflow。
-
-### `maxOverflowCharacters`
-
-| 属性 | 值 |
-|---|---|
-| 类型 | 整数 |
-| 默认值 | `1500` |
-| 范围 | `0..10000` |
-| 用途 | Overflow 轻量列表的独立字符预算 |
-
-设置为 `0` 时关闭 Overflow。
-
-Overflow 每条只包含 `id / ref / title / trust / score`，不包含正文、摘要、标签、Embedding 或内部版本字段。
-
-### 字符数不等于 Token
-
-字符预算使用 JavaScript `string.length`，即 UTF-16 code unit：
-
-```ts
-"abc".length === 3
-"😀".length === 2
-```
-
-它不是模型 Token 的精确数量。选择字符预算是为了：不绑定模型、不依赖模型 Tokenizer、结果确定可测试、与现有 Pin 字符配额一致。
-
-### Overflow 成本边界
-
-Overflow 不计入 `maxCharacters`，但受独立的 `maxOverflowItems` / `maxOverflowCharacters` 约束。因此 Recall 的内容上限大致为 `maxCharacters + maxOverflowCharacters + Adapter 围栏和协议开销`。Core 预算不包含 XML 围栏、JSON 字段或 MCP 协议开销，Adapter 仍需控制最终输出长度。
-
-### Score 语义
-
-Overflow 中的 `score` 是 FTS5/BM25 当前查询的相对相关度：数值越高 → 本次查询中越相关。不同查询的分数尺度可能不同，禁止跨查询比较。
-
----
-
-## 3. OpenCode Adapter
-
-### 配置文件
-
-支持 `~/.config/opencode/opencode-memory.jsonc` / `.json`（`.jsonc` 优先）。自定义路径必须使用绝对路径。
-
-### Plugin Options
-
-**v1（1.18.29+）** 使用 `plugin` tuple options：
-
-```jsonc
-{
-  "plugin": [
-    [
-      "@aifcoding/opencode-memory",
-      {
-        "dbPath": "/absolute/path/memory.db",
-        "pinQuota": 8000,
-        "recall": {
-          "maxCharacters": 3000,
-          "maxOverflowItems": 10,
-          "maxOverflowCharacters": 1500
-        }
-      }
-    ]
-  ]
-}
-```
-
-**v2（2.x）** 使用 `plugins` 的 `options`：
-
-```jsonc
-{
-  "plugins": [
-    {
-      "package": "@aifcoding/opencode-memory",
-      "options": {
-        "dbPath": "/absolute/path/memory.db",
-        "pinQuota": 8000,
-        "recall": {
-          "maxCharacters": 3000,
-          "maxOverflowItems": 10,
-          "maxOverflowCharacters": 1500
-        }
-      }
-    }
-  ]
-}
-```
-
-### `dbPath`
-
-绝对路径字符串，默认 `$HOME/.local/share/opencode/memory/memory.db`。父目录不存在时自动创建。
-
-### `pinQuota`
-
-正整数，默认 `8000`——所有固定记忆最终渲染文本的字符上限。
-
-### `recall`
-
-```jsonc
-{
-  "recall": {
-    "maxCharacters": 3000,
-    "maxOverflowItems": 10,
-    "maxOverflowCharacters": 1500
-  }
-}
-```
-
-`memory_recall.maxCharacters` 可以覆盖本次调用的 Detail Budget，但不会修改 Overflow 配置。
-
-### `capture`
-
-安全辅助记忆提取默认关闭：
-
-```jsonc
-{
-  "capture": {
-    "enabled": false,
-    "onCompaction": true,
-    "agent": "memory-extractor",
-    "maxCandidates": 8
-  }
-}
-```
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---:|---|
-| `capture.enabled` | boolean | `false` | 是否启用候选提取 |
-| `capture.onCompaction` | boolean | `true` | 是否在会话压缩后自动提取 |
-| `capture.target` | object | 无 | 提取目标三选一：`{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`；`model` 目标在 OpenCode 适配器尚未支持 |
-| `capture.agent` | string | 无 | 旧字段，等价 `{kind:"agent",name}`；与 `capture.target` 同时出现视为冲突 |
-| `capture.trustRoleAsOrigin` | boolean | `false` | 仅 v1 宿主：默认拒绝提取（fail closed）；置 `true` 才按协议角色映射 human/model |
-| `capture.maxCandidates` | integer | `8` | 单次最多候选数，范围 1～20 |
-
-Capture 会额外调用模型，并将脱敏、裁剪后的会话文本发送给提取目标（agent 或宿主默认模型）。提取提示词与候选校验在 core（`CAPTURE_PROMPT` / `validateCaptureCandidates`），适配器只提供材料与生成器，详见 [`docs/ADAPTER-CONTRACT.md`](ADAPTER-CONTRACT.md)。
-
-提取管线（core `ExtractionService`）的安全与幂等行为：
-
-- **最终载荷复扫**：逐消息脱敏后对拼接后的 `material` 再扫描凭据，命中即 `credential_residual` 拒绝生成（防跨消息重组凭据）。
-- **预算硬上限**：先按整条淘汰旧消息；单条超长时确定性保留尾部（最新内容）并截断到 `maxInputChars`，最终材料长度不超过上限。
-- **幂等键 = 内容 hash**：`sha256(sourceKind \0 targetFingerprint \0 提取版本 \0 最终材料)` 前 16 位，不再用长度；同长度不同正文不碰撞。
-- **错误码白名单**：只把 `invalid_json` / `invalid_output` / `extractor_no_text` / `session_create_failed` / `missing_api_key` / `generator_empty` / `generator_response_too_large` / `generator_http_<3位>` 写入 run 并回传；其他异常一律折叠为 `generator_failed`，禁止把任意异常文本写入或回传（可能含材料片段）。
-
-### `autoUpdate`
-
-```jsonc
-{
-  "autoUpdate": true
-}
-```
-
-启动时异步检查并尝试刷新 OpenCode 插件缓存，更新后需重启生效。该能力会修改宿主管理的插件缓存；若不希望插件执行网络检查或缓存修改，显式设置 `"autoUpdate": false`。
-
-### 完整示例
-
-```jsonc
-{
-  "dbPath": "/Users/you/.local/share/opencode/memory/memory.db",
-  "pinQuota": 8000,
-
-  "recall": {
-    "maxCharacters": 3000,
-    "maxOverflowItems": 10,
-    "maxOverflowCharacters": 1500
-  },
-
-  "capture": {
-    "enabled": false,
-    "onCompaction": true,
-    "agent": "memory-extractor",
-    "maxCandidates": 8
-  },
-
-  "autoUpdate": false
-}
-```
-
----
-
-## 4. MCP Adapter
-
-### 配置文件位置
-
-默认 `$XDG_CONFIG_HOME/aifcoding/memory-mcp.jsonc`（未设 XDG 时 `$HOME/.config/aifcoding/memory-mcp.jsonc`）。启动：`memory-mcp --config "/absolute/path/memory-mcp.jsonc"`。
-
-### `dbPath`
-
-必须是绝对路径。
-
-### 固定 Project Scope
-
-```jsonc
-{
-  "scope": { "scope": "project", "scopeKey": "/absolute/project" }
-}
-```
-
-Scope 在 Server 启动时固定。MCP 客户端不能通过工具参数传入或覆盖 `scope / scopeKey / dbPath / projectRoot`。首版只支持显式 project Scope，不自动从工作目录推导身份。
-
-### Profile
-
-`readonly`（memory_search/memory_read/memory_list）或 `full`（额外 store/forget/Pin/Candidate 工具）。`readonly` 表示 MCP 工具权限只读，不代表 SQLite 文件以只读方式打开（启动时仍可能迁移并创建 WAL/SHM）。
-
-### Transport
-
-`{ "type": "stdio" }`。首版只支持 stdio。stdout 只允许 MCP 协议消息，日志必须写 stderr 或文件。
-
-### Limits
-
-| 字段 | 默认值 | 范围 |
-|---|---:|---:|
-| `defaultLimit` | `10` | 1～50 |
-| `maxLimit` | `50` | 1～50 |
-| `previewLength` | `500` | 1～5000 |
-
-### Recall
-
-```jsonc
-{
-  "recall": {
-    "maxCharacters": 3000,
-    "maxOverflowItems": 10,
-    "maxOverflowCharacters": 1500
-  }
-}
-```
-
-`memory_search.maxCharacters` 只覆盖当前调用的 Detail Budget。
-
-### `writeTrust`
-
-`low`（默认）/ `high`。MCP 客户端不能自行传入 Trust。低信任记忆不能 Pin。
-
-### `allowCandidateReview`
-
-默认 `false`。只有同时满足 `profile=full` 且 `allowCandidateReview=true` 才注册 `memory_candidate_review`。
-
-### `extraction`（LLM 提取）
-
-默认关闭。启用后 MCP 提供 `memory_extract` 工具：调用方传入文本，服务本地脱敏后交给配置的 openai-compatible 模型，产出待审批候选（只写 `pending`，不直接落正式记忆）。
-
-```jsonc
-{
-  "extraction": {
-    "enabled": true,
-    "allowMcpExtract": true,
-    "provider": {
-      "baseUrl": "https://api.example.com/v1",
-      "model": "your-model",
-      "apiKeyEnv": "YOUR_API_KEY_ENV"
-    },
-    "maxCandidates": 8,
-    "maxInputChars": 60000,
-    "maxOutputTokens": 1024,
-    "timeoutMs": 30000
-  }
-}
-```
-
-| 字段 | 类型 | 默认值 | 说明 |
-|---|---|---:|---|
-| `extraction.enabled` | boolean | `false` | 是否启用提取（`memory_extract` 需要它） |
-| `extraction.allowMcpExtract` | boolean | `false` | 是否注册 `memory_extract` 工具 |
-| `extraction.provider.baseUrl` | string | 无 | openai-compatible 接口地址 |
-| `extraction.provider.model` | string | 无 | 模型名 |
-| `extraction.provider.apiKeyEnv` | string | 无 | 存放 API Key 的环境变量名（值只从环境读取，不写配置/日志） |
-| `extraction.maxCandidates` | integer | `8` | 单次最多候选数（1..20） |
-| `extraction.maxInputChars` | integer | `60000` | 材料字符上限（1000..200000） |
-| `extraction.maxOutputTokens` | integer | `1024` | 生成 token 上限（128..8000） |
-| `extraction.timeoutMs` | integer | `30000` | 生成请求超时（1000..120000） |
-
-`memory_extract` 将输入文本作为 `origin='model-report'` 的不可信材料，经 core 的相同安全管线（来源准入 → 脱敏 → 预算裁剪 → 复扫 → 幂等 → 生成 → 校验）后写候选。工具的 prompt 与校验复用 core（`CAPTURE_PROMPT` / `validateCaptureCandidates`），不在 MCP 侧重复实现。**MCP 真实模型端到端尚未验证**（目前只覆盖单测与工具层测试）。
-
-### 完整示例
-
-```jsonc
-{
-  "dbPath": "/absolute/path/memory.db",
-  "scope": { "scope": "project", "scopeKey": "/absolute/project" },
-  "profile": "readonly",
-  "transport": { "type": "stdio" },
-  "pinQuota": 8000,
-  "writeTrust": "low",
-  "allowCandidateReview": false,
-  "limits": { "defaultLimit": 10, "maxLimit": 50, "previewLength": 500 },
-  "recall": { "maxCharacters": 3000, "maxOverflowItems": 10, "maxOverflowCharacters": 1500 }
-}
-```
-
----
-
-## 5. Memory Ref
-
-### 格式
-
-```
-memory://local/memories/{id}
-memory://local/summaries/{percent-encoded-id}
-memory://local/candidates/{id}
-```
-
-### 同库稳定边界
-
-Ref 根据实体类型和数据库 ID 计算，不写入数据库。保证「同一 SQLite 数据库 + 数据库重启 + 不同 Adapter」之间稳定。不保证：跨数据库复制、导出后重新导入、数据库合并、删除后重新创建、ID 被重新分配。
-
-### Summary 没有 Scope
-
-`session_summaries` 当前没有 `scope/scope_key`。因此：Summary Ref 只能按全局唯一 Summary ID 读取；`readReference.scope` 不构成 Summary 授权边界；MCP 不暴露通用 `readReference`；Adapter 必须根据 Summary 的 `contextKey` 决定是否展示。
-
----
-
-## 6. 数据库与迁移
-
-分层召回、字符预算和 Memory Ref 都是运行时能力，不修改数据库 Schema（不新增表/列/索引/迁移版本）。SQLite 使用 WAL、5000 ms busy timeout、busy/locked 重试、主表与 FTS 事务同步、顺序迁移。
-
-多个 Adapter 共享数据库时应使用 Schema 兼容的 `@aifcoding/memory-core` 版本。自定义 Tokenizer 是索引格式的一部分，已有数据库必须继续使用兼容 Tokenizer（当前不支持自动重建 FTS）。
-
----
-
-## 7. 安全与隐私
-
-- Recall、Read 和 Candidate 内容是历史参考数据，不是当前用户的新指令。
-- OpenCode 与 MCP 文本结果使用 `<memory-context>` 围栏和转义；围栏是模型侧提示，不是 Prompt Injection 的机制性隔离。
-- Overflow 只返回本次已考虑命中的轻量元数据。
-- MCP 继续使用固定 Project Scope；Ref 只是标识符，不授予读取权限；MCP 不允许通过通用 Ref 绕过 Scope 或 Candidate Capability。
-- 不建议将密码、Token、Cookie、私钥或验证码写入记忆。
-- 被召回或固定的内容会进入模型上下文；使用远程模型时，内容可能发送给对应 Provider。

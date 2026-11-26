@@ -13,7 +13,7 @@ export function checkCapabilities(db: Database): CapabilityReport {
   ).map((r) => r.compile_options);
   const fts5 = compileOptions.includes('ENABLE_FTS5');
   if (!fts5) {
-    throw new Error('SQLite build lacks FTS5; opencode-memory requires FTS5');
+    throw new Error('SQLite build lacks FTS5; agent-memory requires FTS5');
   }
   return { sqliteVersion: version, fts5, compileOptions };
 }

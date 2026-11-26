@@ -138,6 +138,10 @@ test('capture filters synthetic Pin overlay from extractor prompt', async () => 
   let extractorPrompt = '';
   const mockClient = {
     session: {
+      typedContext: async () => [
+        { type: 'user', id: 'msg_user', text: '真实用户约定' },
+        { type: 'synthetic', id: 'msg_mem_1', text: 'SECRET PIN <mem_block>' },
+      ],
       messages: async () => ({
         data: [
           {
@@ -153,6 +157,7 @@ test('capture filters synthetic Pin overlay from extractor prompt', async () => 
         ],
       }),
       create: async () => ({ data: { id: 'child-capture' } }),
+      update: async () => ({ data: true }),
       prompt: async ({ body }: any) => {
         extractorPrompt = body.parts[0].text;
         return { data: { parts: [{ type: 'text', text: '{"candidates":[]}' }] } };
@@ -162,7 +167,7 @@ test('capture filters synthetic Pin overlay from extractor prompt', async () => 
   };
   const h = await plugin.server(
     { client: mockClient },
-    { dbPath: join(dir, 'capture.db'), capture: { enabled: true, agent: 'extractor', trustRoleAsOrigin: true } },
+    { dbPath: join(dir, 'capture.db'), capture: { enabled: true, trustRoleAsOrigin: true } },
   );
   await h.tool.memory_capture.execute({}, ctx);
   expect(extractorPrompt).toContain('真实用户约定');
@@ -216,6 +221,7 @@ test('repeated compaction starts the extractor only once', async () => {
         creates++;
         return { data: { id: `capture-child-${creates}` } };
       },
+      update: async () => ({ data: true }),
       prompt: async () => {
         prompts++;
         return { data: { parts: [{ type: 'text', text: '{"candidates":[]}' }] } };
@@ -225,7 +231,7 @@ test('repeated compaction starts the extractor only once', async () => {
   };
   const h = await plugin.server(
     { client: mockClient },
-    { dbPath: join(dir, 'capture-once.db'), capture: { enabled: true, agent: 'extractor' } },
+    { dbPath: join(dir, 'capture-once.db'), capture: { enabled: true } },
   );
   await h.event({ event: { type: 'session.compacted', properties: { sessionID: 'ses-once' } } });
   await h.event({ event: { type: 'session.compacted', properties: { sessionID: 'ses-once' } } });

@@ -82,7 +82,7 @@ The model may call `memory_store`; an example reply:
 已记住 (id=1) Bun 包管理约定
 ```
 
-Optional minimal configuration goes in `~/.config/opencode/opencode-memory.jsonc`; tuple options take precedence:
+Optional minimal configuration goes in `~/.config/opencode/agent-memory.jsonc`; tuple options take precedence:
 
 ```jsonc
 { "dbPath": "/Users/you/.local/share/opencode/memory/memory.db", "pinQuota": 8000 }
@@ -136,15 +136,20 @@ Safe assisted capture is disabled by default. Configure it with:
   "capture": {
     "enabled": true,
     "onCompaction": true,
-    "target": { "kind": "agent", "name": "memory-extractor" },
+    "model": { "provider": "deepseek", "model": "deepseek-flash" },
+    "instructionsFile": "/Users/you/.config/opencode/memory-capture.rules.md",
     "maxCandidates": 8
   }
 }
 ```
 
-`capture.target` is a three-way choice: `{ "kind": "agent", "name" }`, `{ "kind": "host-default" }`, or `{ "kind": "model", "provider", "model" }`. The `model` target is **not yet supported** by the OpenCode adapter (rejected at startup); only `agent` and `host-default` are usable. `agent` is equivalent to the legacy `capture.agent` field; specifying both is a conflict.
+> `capture` is LLM extraction (off by default, produces pending candidates); `autoCapture` is rule-based capture (independent switch). `recall` controls the `memory_recall` tool budget; `autoRecall` controls automatic recall injection.
 
-v1 hosts have no structured source, so extraction is rejected by default (fail closed, returning "当前宿主不支持来源校验，已跳过提取"). Only setting `capture.trustRoleAsOrigin: true` maps protocol role to human/model — an explicit risk switch that v2 (with structured source) does not use.
+On first enable, the plugin creates an editable rules template at `~/.config/opencode/memory-capture.rules.md` (never overwritten; placed under `$XDG_CONFIG_HOME/opencode/` when that is set). Precedence: explicit `capture.instructionsFile` > the generated template > bundled defaults.
+
+The extraction model is configured via `capture.model` (`provider` / `model` / optional `variant`); when omitted the host default model is used. A configured but unavailable model fails the run instead of falling back. Extraction rules come from `capture.instructionsFile` (absolute local markdown path); when omitted the bundled default rules are used. Legacy `capture.agent` and `capture.target.kind="agent"` are deprecated (startup migration error); `capture.target.kind="model"` is migrated to `capture.model`.
+
+v1 hosts have neither structured sources nor a way to enforce tool isolation (their SDK lacks `permissions`/`switchModel`), so extraction is rejected fail-closed (`tool_isolation_unsupported`). `capture.trustRoleAsOrigin` is kept for compatibility only and does not change the outcome; v2 uses structured sources and does not need it.
 
 It can run after successful compaction archival or through explicit `memory_capture`. Candidates use `origin=agent`, `trust=low`, and `status=pending`, then go through `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`. `suggestedDomain` means code: OpenCode approval; user: personal Agent; business: business Agent; uncertain: user decides. Extraction uses an empty Session and deterministic credential, bidi, and invisible-Unicode scans.
 
@@ -154,7 +159,7 @@ Safety and idempotency in the extraction pipeline (core `ExtractionService`): af
 
 ## OpenCode adapter configuration
 
-Configuration comes from `~/.config/opencode/opencode-memory.jsonc` (or `.json`), with `.jsonc` taking precedence. Plugin tuple options override the file and are strictly validated. Core does not read config files, XDG directories, or plugin options; the adapter passes parsed options to Core.
+Configuration comes from `~/.config/opencode/agent-memory.jsonc` (or `.json`), with `.jsonc` taking precedence; the legacy `opencode-memory.jsonc/.json` names are still read for compatibility (no automatic migration). Plugin tuple options override the file and are strictly validated. Core does not read config files, XDG directories, or plugin options; the adapter passes parsed options to Core.
 
 | Option | Type | Default | Description |
 |---|---|---:|---|
@@ -163,9 +168,11 @@ Configuration comes from `~/.config/opencode/opencode-memory.jsonc` (or `.json`)
 | `autoUpdate` | `boolean` | `true` | Check and refresh this adapter's OpenCode cache at startup; restart to apply |
 | `capture.enabled` | `boolean` | `false` | Enable safe assisted memory capture |
 | `capture.onCompaction` | `boolean` | `true` | Trigger after successful compaction archival when enabled |
-| `capture.target` | `object` | none | Three-way extraction target: `{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`; the `model` target is not yet supported by the OpenCode adapter |
-| `capture.agent` | `string` | none | Legacy field, equivalent to `{kind:"agent",name}`; conflicts with `capture.target` |
-| `capture.trustRoleAsOrigin` | `boolean` | `false` | v1 hosts only: default reject extraction (fail closed); set `true` to map protocol role to human/model (explicit risk switch) |
+| `capture.model` | `object` | none | `{provider, model, variant?}`; host default when omitted; a configured but unavailable model fails instead of falling back |
+| `capture.instructionsFile` | `string` | none | Absolute path to user rules markdown; bundled defaults when omitted; unreadable/empty/oversized fails |
+| `capture.target` | `object` | none | **Deprecated**: `model` is migrated to `capture.model`; `agent` fails at startup; `host-default` means no explicit model |
+| `capture.agent` | `string` | none | **Deprecated**: startup migration error; use `capture.model` |
+| `capture.trustRoleAsOrigin` | `boolean` | `false` | v1 compatibility only: v1 cannot enforce tool isolation, so extraction fails closed; this switch does not change the outcome |
 | `capture.maxCandidates` | `number` | `8` | Maximum candidates per run (1..20) |
 | `autoCapture.enabled` | `boolean` | `true` | Write high-confidence signals as low-trust memories |
 | `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` generates candidates without writing; it still advances the session cursor and records no decisions |
@@ -267,7 +274,7 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 
 ### Automatic memory (v2)
 
-> The local source is `@aifcoding/opencode-memory@2.4.0-rc.2` (unpublished, requires `@aifcoding/memory-core@0.5.1`); on npm, `next` is still `2.3.0-rc.2` (old capture behaviour) and `latest` is `2.2.2`. This section describes the local source.
+> The local source is `@aifcoding/opencode-memory@2.4.0-rc.3` (unpublished, requires `@aifcoding/memory-core@0.5.2`); on npm, `next` is still `2.3.0-rc.2` (old capture behaviour) and `latest` is `2.2.2`. This section describes the local source.
 
 On every model request, v2 runs one automatic memory pass:
 
@@ -280,7 +287,7 @@ On every model request, v2 runs one automatic memory pass:
 2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result. Pending candidates never enter `memories`, so neither recall nor `memory_recall` returns them.
 3. **Isolation**: the automatic-memory call has an outer error handler; capture and recall are separately wrapped, but the Pin transform sits outside it. Injected content is not persisted.
 
-LLM-assisted extraction is off by default. When enabled, locally redacted conversation material is sent to the selected model (the host default model unless `capture.agent` pins one); this may incur cost, and regex redaction cannot guarantee that every secret is detected.
+LLM-assisted extraction is off by default. When enabled, locally redacted conversation material is sent to the selected model (the host default model unless `capture.model` pins one); this may incur cost, and regex redaction cannot guarantee that every secret is detected.
 
 Limitations: at most 3 direct writes per message (direct writes plus candidates); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; Q&A pairs and weak signals no longer produce any writes; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
 

@@ -1877,3 +1877,9 @@ test('daily chat, questions and hypotheses never produce memories or candidates'
   expect(await manager.listMemories({ scope })).toHaveLength(0);
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
+
+test('JSON and markdown-bold credential assignments are detected', () => {
+  expect(redactCredentialText('{"password":"abc123"}').hits).toBeGreaterThan(0);
+  expect(redactCredentialText('**password**=abc123').hits).toBeGreaterThan(0);
+  expect(redactCredentialText('token: "plain-value"').hits).toBeGreaterThan(0);
+});

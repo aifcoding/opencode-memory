@@ -7,6 +7,7 @@ import type { MemoryManager } from './MemoryManager.js';
 import type { TextGenerator } from '../ports/TextGenerator.js';
 import { validateCaptureCandidates } from '../extraction/validate.js';
 import { CAPTURE_EXTRACTOR_VERSION } from '../extraction/prompt.js';
+import { instructionsHash } from '../extraction/instructions.js';
 
 export interface ExtractionLimits {
   maxInputChars: number;
@@ -35,7 +36,7 @@ export interface ExtractionOutcome {
 }
 
 const SAFE_ERROR_CODE =
-  /^(invalid_json|invalid_output|extractor_no_text|session_create_failed|missing_api_key|generator_empty|generator_response_too_large|generator_http_\d{3})$/;
+  /^(invalid_json|invalid_output|extractor_no_text|session_create_failed|missing_api_key|generator_empty|generator_response_too_large|generator_http_\d{3}|generator_timeout|model_selection_unsupported|tool_isolation_unsupported|instructions_unreadable|instructions_too_large|session_cleanup_failed|credential_in_instructions)$/;
 
 /** 只把已知安全错误码写入 run/返回调用方；其余一律折叠成 generator_failed。 */
 function safeErrorCode(error: unknown): string {
@@ -67,6 +68,16 @@ export class ExtractionService {
   ) {}
 
   async extract(request: ExtractionRequest): Promise<ExtractionOutcome> {
+    // 规则文件同样会外发：命中凭据直接拒绝，不回显内容。
+    if (hasCredential(request.instructions)) {
+      return {
+        status: 'skipped',
+        candidateCount: 0,
+        filteredCount: 0,
+        reason: 'credential_in_instructions',
+      };
+    }
+
     // 来源准入：只有人工/模型材料可进提取；模型自述走 model-report。
     // 缺 origin 一律不可信（fail closed），适配器必须标注作者身份。
     const allowedOrigins: ReadonlySet<string> =
@@ -116,7 +127,7 @@ export class ExtractionService {
     // 幂等键用最终材料的内容摘要，不能用长度（同长度不同正文会碰撞）。
     const digest = createHash('sha256')
       .update(
-        `${request.sourceKind}\u0000${request.targetFingerprint}\u0000${CAPTURE_EXTRACTOR_VERSION}\u0000${material}`,
+        `${request.sourceKind}\u0000${request.targetFingerprint}\u0000${CAPTURE_EXTRACTOR_VERSION}\u0000${instructionsHash(request.instructions)}\u0000${material}`,
       )
       .digest('hex')
       .slice(0, 16);

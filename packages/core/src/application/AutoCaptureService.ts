@@ -26,6 +26,10 @@ const CREDENTIAL_PATTERNS: RegExp[] = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /\b(?:cookie|set-cookie)\s*:\s*\S+/i,
+  // JSON 字段赋值："password": "abc"
+  /"(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization)"\s*:\s*"[^"]+"/i,
+  // Markdown 加粗字段：**password**=abc / **token**: abc
+  /\*\*\s*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*\*\*\s*[:=]\s*\S+/i,
 ];
 
 /** E1：只认单元开头的明确保存指令，避免「文档里写着'记住…'」被当成保存意图。 */

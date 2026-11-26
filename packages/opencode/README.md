@@ -57,7 +57,7 @@ Recall 分层召回配置（可选，走默认值即可）：
 
 `memory_recall` 默认只返回标题+摘要（无摘要时回退正文前 200 字符），预算外候选以轻量 Ref 列表返回，全文用 `memory_read` 获取。
 
-自动记忆（仅 v2；本地源码 `2.4.0-rc.1` 未发布，依赖 `@aifcoding/memory-core@0.5.0`；npm `next` 仍是旧采集行为的 `2.3.0-rc.2`，`latest` 为 `2.2.2`）：
+自动记忆（仅 v2；本地源码 `2.4.0-rc.3` 未发布，依赖 `@aifcoding/memory-core@0.5.2`；npm 上的版本仍是旧采集行为）：
 
 ```jsonc
 { "plugins": [{ "package": "@aifcoding/opencode-memory", "options": {
@@ -105,7 +105,7 @@ The `<memory-context>` and `<mem_block>` fences are model-side prompts, not a me
 
 Tool descriptions and results are currently in Simplified Chinese; English localization is not implemented.
 
-Capture is disabled by default. When enabled, configure `capture.enabled`, `capture.agent`, optional `capture.onCompaction` (default `true`), and `capture.maxCandidates` (default `8`). The adapter provides `memory_capture`, `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`; candidates remain low-trust until explicitly approved, and the plugin does not enforce human confirmation.
+Capture is disabled by default. When enabled, configure `capture.enabled`; optionally set `capture.model` (`{provider, model, variant?}`, host default when omitted) and `capture.instructionsFile` (absolute rules markdown; an editable template is auto-created under the OpenCode config dir). `capture.onCompaction` defaults to `true`, `capture.maxCandidates` to `8`. Legacy `capture.agent` / `target.kind="agent"` fail at startup; `target.kind="model"` is migrated to `capture.model`. The adapter provides `memory_capture`, `memory_candidates`, `memory_candidate_read`, and `memory_candidate_review`; candidates remain low-trust until explicitly approved, and the plugin does not enforce human confirmation.
 
 Automatic memory is v2-only and enabled by default for capture: `autoCapture` writes low-trust memories (`origin=agent`, `trust=low`) from five signal kinds and never overwrites user-authored memories; credential filtering only rejects input matching the implemented rules. `autoRecall` defaults to `auto`, always uses `global/default`, applies FTS plus title-keyword admission, and injects a summary block whose budget includes fences and notes; `hint` injects only a fixed retrieval prompt and `shadow` neither retrieves nor injects. Capture `shadow` still advances the session cursor and provides no decision record. There is no tag-retrieval channel and no project isolation.
 

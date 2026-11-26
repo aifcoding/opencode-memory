@@ -27,10 +27,6 @@ export interface CaptureValidationResult {
 const TYPES = new Set<string>(CAPTURE_TYPES);
 const DOMAINS = new Set<string>(CAPTURE_DOMAINS);
 
-function normalize(text: string): string {
-  return text.replace(/\s+/g, ' ').trim();
-}
-
 /**
  * 规则：正文过短/纯问句/标题过泛/类型或领域越界/证据不在材料中/同批重复标题 → 丢弃。
  */
@@ -40,10 +36,10 @@ export function validateCaptureCandidates(
   maxCandidates: number,
 ): CaptureValidationResult {
   const filtered: string[] = [];
-  const material = normalize(materialText);
-  const seenTitles = new Set<string>();
   const kept: CaptureCandidateOutput[] = [];
   if (!Array.isArray(candidates)) return { candidates: [], filtered };
+  // 质量规则（长度、问句、引用存在性、同批去重）已移到提示词；这里只做结构校验与安全上限。
+  void materialText;
 
   for (const raw of candidates) {
     if (!raw || typeof raw !== 'object') {
@@ -51,54 +47,38 @@ export function validateCaptureCandidates(
       continue;
     }
     const item = raw as Record<string, unknown>;
-    const title = normalize(String(item.title ?? ''));
-    const content = normalize(String(item.content ?? ''));
-    const type = String(item.type ?? '');
-    const domain = String(item.suggestedDomain ?? '');
-    const evidence = normalize(String(item.evidenceQuote ?? ''));
-
-    if (title.length < 2) {
-      filtered.push('title too short');
+    if (typeof item.title !== 'string' || typeof item.content !== 'string') {
+      filtered.push('title or content is not a string');
       continue;
     }
-    if (content.length < 20) {
-      filtered.push('content too short');
-      continue;
-    }
-    if (/[？?]\s*$/.test(content) && content.length < 60) {
-      filtered.push('question-like content');
+    const title = item.title.trim();
+    const content = item.content.trim();
+    const type = typeof item.type === 'string' ? item.type : '';
+    const domain = typeof item.suggestedDomain === 'string' ? item.suggestedDomain : '';
+    if (!title || !content) {
+      filtered.push('empty title or content');
       continue;
     }
     if (!TYPES.has(type) || !DOMAINS.has(domain)) {
       filtered.push('unknown type or domain');
       continue;
     }
-    if (evidence.length < 8) {
-      filtered.push('evidence quote too short');
-      continue;
-    }
-    if (!material.includes(evidence)) {
-      filtered.push('evidence quote not found in material');
-      continue;
-    }
-    const key = title.toLowerCase();
-    if (seenTitles.has(key)) {
-      filtered.push('duplicate title in batch');
-      continue;
-    }
-    seenTitles.add(key);
     kept.push({
       title: title.slice(0, 200),
       content: content.slice(0, 50000),
-      summary: item.summary ? String(item.summary).slice(0, 500) : undefined,
+      summary: typeof item.summary === 'string' ? item.summary.slice(0, 500) : undefined,
       type: type as CaptureType,
       tags: Array.isArray(item.tags)
-        ? item.tags.filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0).slice(0, 20)
+        ? item.tags
+            .filter((tag): tag is string => typeof tag === 'string' && tag.trim().length > 0)
+            .slice(0, 20)
         : undefined,
       suggestedDomain: domain as CaptureDomain,
-      evidenceQuote: evidence,
+      evidenceQuote:
+        typeof item.evidenceQuote === 'string' ? item.evidenceQuote.slice(0, 2000) : undefined,
     });
     if (kept.length >= maxCandidates) break;
   }
   return { candidates: kept, filtered };
 }
+

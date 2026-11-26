@@ -82,7 +82,7 @@ OpenCode 启动时会通过 Bun 自动安装并缓存插件。
 已记住 (id=1) Bun 包管理约定
 ```
 
-最小配置（可选）写入 `~/.config/opencode/opencode-memory.jsonc`；tuple options 优先于文件配置：
+最小配置（可选）写入 `~/.config/opencode/agent-memory.jsonc`；tuple options 优先于文件配置：
 
 ```jsonc
 { "dbPath": "/Users/you/.local/share/opencode/memory/memory.db", "pinQuota": 8000 }
@@ -136,15 +136,20 @@ bun run build
   "capture": {
     "enabled": true,
     "onCompaction": true,
-    "target": { "kind": "agent", "name": "memory-extractor" },
+    "model": { "provider": "deepseek", "model": "deepseek-flash" },
+    "instructionsFile": "/Users/you/.config/opencode/memory-capture.rules.md",
     "maxCandidates": 8
   }
 }
 ```
 
-`capture.target` 三选一：`{ "kind": "agent", "name" }`、`{ "kind": "host-default" }`、`{ "kind": "model", "provider", "model" }`。其中 `model` 目标在 OpenCode 适配器**尚未支持**（启动时拒绝），实际可用 `agent` / `host-default`；`agent` 相当于旧字段 `capture.agent`，二者同时出现视为冲突。
+> `capture` 是 LLM 提取（默认关闭，产出待审候选）；`autoCapture` 是规则采集（独立开关）。`recall` 控制 `memory_recall` 工具预算，`autoRecall` 控制自动召回注入。
 
-v1 宿主没有结构化来源，默认拒绝提取（fail closed，返回「当前宿主不支持来源校验，已跳过提取」）；只有显式设置 `capture.trustRoleAsOrigin: true` 才按协议角色映射 human/model（显式风险开关；v2 有结构化来源时不使用它）。
+首次启用提取时，插件会自动生成可编辑的规则模板 `~/.config/opencode/memory-capture.rules.md`（已存在则不覆盖；`XDG_CONFIG_HOME` 生效时放在 `$XDG_CONFIG_HOME/opencode/`）。规则文件优先级：显式 `capture.instructionsFile` > 自动生成的模板 > 内置默认规则。
+
+提取模型由 `capture.model`（`provider` / `model` / 可选 `variant`）指定；未配置时使用宿主默认模型。配置了但模型不可用会直接失败，不回退。提取规则由 `capture.instructionsFile`（本地绝对路径 md）指定；未配置时使用随包默认规则。旧字段 `capture.agent` 与 `capture.target.kind="agent"` 已弃用（启动报迁移错误），`capture.target.kind="model"` 会自动映射为 `capture.model`。
+
+v1 宿主没有结构化来源，也无法强制工具隔离（SDK 没有 permissions/switchModel），提取按 fail-closed 直接拒绝（`tool_isolation_unsupported`）；`capture.trustRoleAsOrigin` 仅为兼容保留，不改变结果。v2 使用结构化来源，不需要该开关。
 
 支持 compaction 成功归档后触发和用户显式调用 `memory_capture` 两种方式。候选固定为 `origin=agent`、`trust=low`、`status=pending`，必须经过 `memory_candidates`、`memory_candidate_read` 和 `memory_candidate_review` 审批。`suggestedDomain`：`code` 适合在 OpenCode 审批，`user` 建议交个人 Agent 管理，`business` 建议交业务 Agent 管理，`uncertain` 请用户判断归属。提取使用空 Session 防递归，并执行凭据、bidi 和不可见 Unicode 扫描。
 
@@ -154,7 +159,7 @@ v1 宿主没有结构化来源，默认拒绝提取（fail closed，返回「当
 
 ## OpenCode 适配器配置
 
-配置来自 `~/.config/opencode/opencode-memory.jsonc`（或 `.json`），`.jsonc` 优先；插件 tuple options 优先于文件配置并进行严格校验。Core 不读取配置文件、XDG 目录或插件 options，只接收 Adapter 传入的已解析配置。
+配置来自 `~/.config/opencode/agent-memory.jsonc`（或 `.json`），`.jsonc` 优先；旧名 `opencode-memory.jsonc/.json` 仍可读取（兼容，不自动迁移）；插件 tuple options 优先于文件配置并进行严格校验。Core 不读取配置文件、XDG 目录或插件 options，只接收 Adapter 传入的已解析配置。
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
@@ -163,9 +168,11 @@ v1 宿主没有结构化来源，默认拒绝提取（fail closed，返回「当
 | `autoUpdate` | `boolean` | `true` | 启动时检查并刷新自身 OpenCode 插件缓存；更新后需重启生效 |
 | `capture.enabled` | `boolean` | `false` | 是否启用安全辅助记忆提取 |
 | `capture.onCompaction` | `boolean` | `true` | 启用后是否在 compaction 归档成功后触发 |
-| `capture.target` | `object` | 无 | 提取目标三选一：`{kind:"agent",name}` / `{kind:"host-default"}` / `{kind:"model",provider,model}`；`model` 目标在 OpenCode 适配器尚未支持 |
-| `capture.agent` | `string` | 无 | 旧字段，等价 `{kind:"agent",name}`；与 `capture.target` 同时出现视为冲突 |
-| `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 宿主：默认拒绝提取（fail closed）；置 `true` 才按协议角色映射 human/model（显式风险开关） |
+| `capture.model` | `object` | 无 | `{provider, model, variant?}`；未配置用宿主默认；配置后不可用即失败，不回退 |
+| `capture.instructionsFile` | `string` | 无 | 用户规则 md 的本地绝对路径；未配置用随包默认规则；读不到/为空/超限即失败 |
+| `capture.target` | `object` | 无 | **已弃用**：`model` 会自动映射为 `capture.model`；`agent` 启动报迁移错误；`host-default` 视为未配置模型 |
+| `capture.agent` | `string` | 无 | **已弃用**：启动报迁移错误，改用 `capture.model` |
+| `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 宿主兼容保留：v1 无法强制工具隔离，提取 fail-closed 拒绝；该开关不改变结果 |
 | `capture.maxCandidates` | `number` | `8` | 单次最多生成的候选数量（1..20） |
 | `autoCapture.enabled` | `boolean` | `true` | 是否自动写入高置信信号（`origin=agent`、`trust=low`） |
 | `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` 生成候选但不写入；仍推进会话游标，无决策记录 |
@@ -271,7 +278,7 @@ MCP 侧通过 `extraction` 配置块启用 LLM 提取，并提供 `memory_extrac
 
 ### 自动记忆（v2）
 
-> 本地源码为 `@aifcoding/opencode-memory@2.4.0-rc.2`（未发布，依赖 `@aifcoding/memory-core@0.5.1`）；npm 上 `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 是 `2.2.2`。本文描述的是本地源码行为。
+> 本地源码为 `@aifcoding/opencode-memory@2.4.0-rc.3`（未发布，依赖 `@aifcoding/memory-core@0.5.2`）；npm 上 `next` 仍是 `2.3.0-rc.2`（旧采集行为），`latest` 是 `2.2.2`。本文描述的是本地源码行为。
 
 v2 在每个模型请求前执行一次自动记忆流程：
 
@@ -284,7 +291,7 @@ v2 在每个模型请求前执行一次自动记忆流程：
 2. **召回**：默认 `auto`，统一使用 `global/default`，走 FTS + 标题关键词准入（英文词边界、泛词过滤），注入摘要块；`hint` 只注入固定检索提示；缓存按「用户问题 + 最近工具结果」区分。未审批候选不在 `memories` 表，召回与 `memory_recall` 都不返回。
 3. **隔离**：自动记忆调用有外层异常捕获；采集与召回已分别 try/catch，但 Pin transform 在该捕获之外。注入不落库。
 
-辅助提取（LLM）默认关闭；启用后会把经本地脱敏的会话材料发送给所选模型（缺省用宿主默认模型，也可用 `capture.agent` 固定到某个 agent），可能产生费用；脱敏基于正则，不保证识别所有秘密。
+辅助提取（LLM）默认关闭；启用后会把经本地脱敏的会话材料发送给所选模型（缺省用宿主默认模型，可用 `capture.model` 固定模型；未配置时用宿主默认），可能产生费用；脱敏基于正则，不保证识别所有秘密。
 
 限制：单条消息最多 3 条直写；同一 scope 每日最多 20 条新增待审候选；14 天过期未实现；游标按用户文本 hash 去重，相同文本后续输入会跳过；问答对与弱信号已不再产生写入；规则面向中文，质量未标定；人工记忆与高信任记忆不会被自动改写；凭据命中片段脱敏后继续（整条仅凭据才放弃），正则不保证识别所有秘密；v1 不启用。完整准入规则见 [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md)。
 

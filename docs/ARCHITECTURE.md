@@ -421,11 +421,28 @@ query
 
 尚未自动覆盖：并发迁移/写入、overlay 消息结构、真实 OpenCode v1/v2 compaction 端到端、配置错误分支（部分运行时链路曾通过 spike 手动验证）。
 
-## 通用 LLM 提取管线（设计已定）
+## 通用 LLM 提取管线（已实现）
 
-目标：宿主只做适配或改配置即可复用同一套提取管线。当前状态：**阶段 ①（类型与启动校验）已实现**，编排、安全管线、生成器与各宿主 adapter 未实现。
+目标：宿主只做适配或改配置即可复用同一套提取管线。当前状态：core 编排与安全管线、OpenCode v2 适配器、MCP 手动入口均已实现；MCP 真实模型端到端未验证。
 
-### 分层
+| 层 | 职责 | 状态 |
+|---|---|---|
+| `core/domain/extraction.ts` | 来源、消息、提取目标类型 | 已实现 |
+| `core/ports/TextGenerator.ts` | 一次纯文本生成端口 | 已实现 |
+| `core/application/ExtractionService.ts` | 固定安全顺序 + 候选提交 | 已实现 |
+| `core/extraction/{prompt,validate,instructions}.ts` | 默认规则、指令组合、本地校验 | 已实现 |
+| OpenCode adapter | 子会话执行、来源映射、模型切换、工具隔离 | 已实现（v2） |
+| MCP | `memory_extract` + openai-compatible 生成器 | 已实现（真实模型端到端未验证） |
+
+### 契约
+
+- 模型：`capture.model`（provider/model/variant）；未配置用宿主默认；配置不可用即失败，不回退；
+- 规则：`capture.instructionsFile` 或插件自动生成的 `memory-capture.rules.md`；发送时在用户规则之后追加程序约束，冲突以程序约束为准；
+- 来源：`host-transcript` 仅 `human/model`，`model-report` 仅 `model-report`；缺 origin 拒绝；
+- 固定顺序：来源筛选 → 脱敏 → 预算 → 最终载荷扫描 → 幂等租约 → 生成 → 本地校验 → 写 pending；
+- pending 永不参与召回；批准后才进入正式记忆。
+
+## 分层
 
 | 层 | 职责 | 状态 |
 |---|---|---|

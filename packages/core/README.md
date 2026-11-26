@@ -44,6 +44,18 @@ Core 提供两个可复用服务，但**不会自行触发**：
 
 调度、注入位置、缓存与开关都在 OpenCode v2 适配层（`packages/opencode/src/context/auto-memory.ts`）。
 
+### LLM 提取（ExtractionService）
+
+供宿主适配器复用的提取编排：
+
+- `ExtractionService`：固定顺序（来源筛选 → 脱敏 → 预算 → 最终载荷扫描 → 幂等租约 → 生成 → 本地校验 → pending）；
+- `TextGenerator`：一次纯文本生成端口；宿主可用临时子会话或 HTTP 实现；
+- `composeInstructions(userRules)`：用户规则在前、程序附加约束在后；未传规则时使用 `DEFAULT_RULES`；
+- `readInstructionsFile(path)`：读取本地规则 md（绝对路径、大小上限、失败抛安全错误码）；
+- `instructionsHash`、`validateCaptureCandidates`、`CAPTURE_PROMPT`、`CAPTURE_EXTRACTOR_VERSION` 均由 core 导出。
+
+来源准入：`host-transcript` 只接受 `human/model`，`model-report` 只接受 `model-report`；缺 `origin` 一律拒绝。任务身份包含最终材料与最终 instructions 的内容 hash；候选只写 pending，永不直接写正式记忆。
+
 ### 分层 Recall
 
 `recallMemories` 统一返回投影结果，默认 `summary`（标题+摘要）；只有显式 `projection: 'full'` 或 `readMemory/readReference` 才返回完整正文。没有已保存摘要时，summary 回退正文前 200 字符（`summarySource=content_preview`，不改库）。

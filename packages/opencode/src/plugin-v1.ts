@@ -1,15 +1,15 @@
 import { z } from 'zod';
 import { join, isAbsolute } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import type { Plugin, PluginInput, ToolContext } from '@opencode-ai/plugin';
 import { escapeXmlText, renderPinnedBlock, renderPinnedEntry } from '@aifcoding/memory-core';
 import type { Trust } from '@aifcoding/memory-core';
 import { createSqliteMemoryManager } from '@aifcoding/memory-core/sqlite';
-import { CAPTURE_PROMPT, ExtractionService, validateCaptureConfig } from '@aifcoding/memory-core';
+import { ExtractionService, composeInstructions, readInstructionsFile } from '@aifcoding/memory-core';
 import type { ExtractionMessage, TextGenerator } from '@aifcoding/memory-core';
 import { extractionMaterial, type HostMessage } from './context/material';
-import { filterCaptureMessages, type RawCaptureMessage } from './capture/filter';
+import { defaultRulesPath, ensureRulesTemplate } from './capture/rules';
 import { suggestedDomainHint } from './capture/hint';
 import { checkAndRefresh } from './self-update';
 
@@ -46,6 +46,18 @@ export const ConfigSchema = z
          * 仅当用户明确认可「协议角色=作者身份」时置 true。
          */
         trustRoleAsOrigin: z.boolean().default(false),
+        /** 提取模型；未配置时用宿主默认模型。 */
+        model: z
+          .object({
+            provider: z.string().min(1),
+            model: z.string().min(1),
+            variant: z.string().min(1).optional(),
+          })
+          .strict()
+          .optional(),
+        /** 用户规则 md（本地绝对路径）；未配置时用随包默认规则。 */
+        instructionsFile: z.string().min(1).optional(),
+        /** @deprecated 使用 model；仅保留用于迁移报错。 */
         agent: z.string().min(1).optional(),
         target: z
           .union([
@@ -108,6 +120,8 @@ async function captureSession(
   agent: string | undefined,
   maxCandidates: number,
   trustRoleAsOrigin: boolean,
+  model: { provider: string; model: string; variant?: string } | undefined,
+  instructionsFile: string | undefined,
 ): Promise<string> {
   if (!client) return '无法提取：OpenCode client 不可用。';
   // v2 宿主能给出结构化来源：注入消息（automation 等）不得进入提取材料。
@@ -125,32 +139,14 @@ async function captureSession(
       materials,
       agent,
       maxCandidates,
+      model,
+      instructionsFile,
     );
   }
-  if (!trustRoleAsOrigin) {
-    // v1 宿主没有结构化来源，无法证明 user 消息来自人工；默认 fail-closed。
-    return '当前宿主不支持来源校验，已跳过提取（v1 可显式开启 capture.trustRoleAsOrigin）。';
-  }
-  const response = await client.session.messages({ path: { id: sessionId } });
-  const raw = ((response as any)?.data ?? []) as RawCaptureMessage[];
-  const filtered = filterCaptureMessages(raw);
-  if (filtered.length === 0) return '没有可提取的材料。';
-  return captureMessages(
-    client,
-    manager,
-    sessionId,
-    sourceId,
-    trigger,
-    filtered.map((message) => ({
-      id: message.id,
-      role: message.role,
-      text: message.text,
-      synthetic: false,
-      origin: message.role === 'user' ? ('human' as const) : ('model' as const),
-    })),
-    agent,
-    maxCandidates,
-  );
+  // v1 宿主没有结构化来源，也无法强制工具隔离（SDK 无 permissions/switchModel）；
+  // 按 fail-closed 直接拒绝提取，避免在无隔离的会话里处理不可信材料。
+  void trustRoleAsOrigin;
+  return '提取未执行：当前宿主不支持工具隔离（tool_isolation_unsupported）。请升级到 v2 宿主。';
 }
 
 /** 用已给定的材料直接提取（压缩摘要不需要再读会话消息）。 */
@@ -163,9 +159,26 @@ async function captureMessages(
   messages: ExtractionMessage[],
   agent: string | undefined,
   maxCandidates: number,
+  model?: { provider: string; model: string; variant?: string },
+  instructionsFile?: string,
 ): Promise<string> {
   if (!client) return '无法提取：OpenCode client 不可用。';
   if (messages.length === 0) return '没有可提取的材料。';
+
+  let instructions: string;
+  try {
+    const userRules = instructionsFile ? readInstructionsFile(instructionsFile) : undefined;
+    instructions = composeInstructions(userRules);
+  } catch (error) {
+    const code = error instanceof Error ? error.message : 'instructions_unreadable';
+    const reason =
+      code === 'instructions_too_large' ? '规则文件超过大小上限' : '规则文件不可读';
+    return [
+      `提取未执行：${reason}（${code}）。`,
+      '来源：capture.instructionsFile（或自动规则模板）。',
+      '处理：检查绝对路径与读取权限；若想使用自动模板，删除该配置项。',
+    ].join('\n');
+  }
 
   // 宿主端口：新建临时子会话并生成一次；agent 可选（缺省宿主默认模型）。
   const generator: TextGenerator = {
@@ -173,23 +186,57 @@ async function captureMessages(
       const fresh: any = await client.session.create();
       const childId = fresh?.data?.id ?? fresh?.id;
       if (!childId) throw new Error('session_create_failed');
+      const session = client.session as any;
       try {
+        // 工具隔离：临时会话禁用全部工具；宿主不支持则 fail closed。
+        // 工具隔离必须由宿主强制：不支持即失败（fail closed），不能靠提示词约束。
+        if (typeof session.update !== 'function') throw new Error('tool_isolation_unsupported');
+        try {
+          const updated = await session.update({
+            path: { id: childId },
+            body: { permissions: [{ action: '*', resource: '*', effect: 'deny' }] },
+          });
+          if (updated && typeof updated === 'object' && 'error' in updated) {
+            throw new Error('tool_isolation_unsupported');
+          }
+        } catch {
+          throw new Error('tool_isolation_unsupported');
+        }
+        if (model) {
+          if (typeof session.switchModel !== 'function') throw new Error('model_selection_unsupported');
+          try {
+            const switched = await session.switchModel({
+              path: { id: childId },
+              body: { model: { providerID: model.provider, id: model.model, variant: model.variant } },
+            });
+            if (switched && typeof switched === 'object' && 'error' in switched) {
+              throw new Error('model_selection_unsupported');
+            }
+          } catch {
+            throw new Error('model_selection_unsupported');
+          }
+        }
         const prompt: any = await client.session.prompt({
           path: { id: childId },
           body: {
             ...(agent ? { agent } : {}),
             parts: [
-              { type: 'text', text: `${input.instructions}\n\n会话内容：\n${input.data}` },
+              { type: 'text', text: `${instructions}\n\n会话内容：\n${input.data}` },
             ],
           },
         });
+        if (prompt && typeof prompt === 'object' && 'error' in prompt) {
+          throw new Error('generator_failed');
+        }
         const text = ((prompt as any)?.data?.parts ?? []).find(
           (part: any) => part.type === 'text',
         )?.text;
         if (!text) throw new Error('extractor_no_text');
         return { text };
       } finally {
-        await client.session.delete({ path: { id: childId } }).catch(() => undefined);
+        await client.session.delete({ path: { id: childId } }).catch(() => {
+          console.error('[agent-memory] session_cleanup_failed');
+        });
       }
     },
   };
@@ -206,15 +253,30 @@ async function captureMessages(
     snapshotId: sourceId,
     trigger,
     messages,
-    instructions: CAPTURE_PROMPT,
-    targetFingerprint: agent ?? 'host-default',
+    instructions,
+    targetFingerprint: model
+      ? `${model.provider}/${model.model}${model.variant ? `#${model.variant}` : ''}`
+      : 'host-default',
   });
   if (outcome.status === 'completed') {
     return `已生成 ${outcome.candidateCount} 条候选记忆（过滤 ${outcome.filteredCount} 条），请使用 memory_candidates 审批。`;
   }
   if (outcome.status === 'already-completed') return '该会话内容已提取过。';
   if (outcome.status === 'in-progress') return '该会话正在提取中。';
-  return `提取未完成：${outcome.reason ?? outcome.status}`;
+  const hint: Record<string, string> = {
+    model_selection_unsupported:
+      '无法使用配置的模型（宿主不支持切换，或 provider/model 不可用）。处理：检查 capture.model，或移除该配置改用宿主默认模型。',
+    tool_isolation_unsupported:
+      '宿主无法禁用临时会话工具（隔离不可用）。处理：升级宿主，或关闭提取。',
+    credential_in_instructions: '规则文件命中凭据。处理：移除规则文件中的凭据后重试。',
+    instructions_unreadable: '规则文件不可读。处理：检查绝对路径与读取权限。',
+    instructions_too_large: '规则文件超过大小上限。处理：精简规则文件。',
+    generator_failed: '生成失败。处理：查看服务日志中的错误码，确认模型与网络可用。',
+    generator_timeout: '生成超时（已中断临时会话）。处理：稍后重试，或检查模型响应速度。',
+  };
+  const reason = outcome.reason ?? outcome.status;
+  const advice = hint[reason];
+  return advice ? `提取未完成：${advice}（${reason}）` : `提取未完成：${reason}`;
 }
 
 // opencode 数据根目录（与 session db 同根）：macOS/Linux 为 ~/.local/share/opencode
@@ -235,7 +297,13 @@ function opencodeConfigDir(): string {
 
 // 读取独立配置文件（可选；.jsonc 优先，.json 兜底）。文件不存在则忽略，读取/解析失败显式报错。
 export function readConfigFile(): Record<string, unknown> {
-  for (const name of ['opencode-memory.jsonc', 'opencode-memory.json']) {
+  // 新名优先；旧名只做兼容读取，不自动迁移。
+  for (const name of [
+    'agent-memory.jsonc',
+    'agent-memory.json',
+    'opencode-memory.jsonc',
+    'opencode-memory.json',
+  ]) {
     const configPath = join(opencodeConfigDir(), name);
     let raw: string;
     try {
@@ -243,18 +311,18 @@ export function readConfigFile(): Record<string, unknown> {
     } catch (error) {
       if ((error as { code?: string })?.code === 'ENOENT') continue; // 文件不存在，尝试下一个
       throw new Error(
-        `[opencode-memory] failed to read config ${configPath}: ${(error as Error)?.message}`,
+        `[agent-memory] failed to read config ${configPath}: ${(error as Error)?.message}`,
       );
     }
     const errors: ParseError[] = [];
     const parsed = parseJsonc(raw, errors);
     if (errors.length > 0) {
       throw new Error(
-        `[opencode-memory] failed to parse config ${configPath}: ${printParseErrorCode(errors[0].error)}`,
+        `[agent-memory] failed to parse config ${configPath}: ${printParseErrorCode(errors[0].error)}`,
       );
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      throw new Error(`[opencode-memory] failed to parse config ${configPath}: expected an object`);
+      throw new Error(`[agent-memory] failed to parse config ${configPath}: expected an object`);
     }
     return parsed as Record<string, unknown>;
   }
@@ -283,7 +351,7 @@ function logError(client: PluginInput['client'], message: string, error: unknown
   client.app
     .log({
       body: {
-        service: 'opencode-memory',
+        service: 'agent-memory',
         level: 'error',
         message,
         extra: { error: error instanceof Error ? error.message : String(error) },
@@ -308,7 +376,7 @@ export const v1Plugin: Plugin = async (
   });
   if (!config.success) {
     throw new Error(
-      `[opencode-memory] invalid config: ${config.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`,
+      `[agent-memory] invalid config: ${config.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join(', ')}`,
     );
   }
   // capture.agent 可选：缺省时使用宿主默认模型（临时子会话直接生成）。
@@ -333,19 +401,28 @@ export const v1Plugin: Plugin = async (
   }
   const manager = createSqliteMemoryManager({ dbPath, pinQuota });
   const rawCapture = config.data.capture ?? {};
-  const normalized: Record<string, unknown> = { ...rawCapture };
-  if (normalized.enabled && !normalized.target && !normalized.agent) {
-    // OpenCode 适配层：未配置目标时使用宿主默认生成能力。
-    normalized.target = { kind: 'host-default' };
-  }
-  const targetCheck = validateCaptureConfig(normalized as any);
-  if (!targetCheck.ok) {
-    throw new Error(`[opencode-memory] invalid capture target: ${targetCheck.reason}`);
-  }
-  if (targetCheck.target?.kind === 'model') {
+  if ((rawCapture as { agent?: string }).agent) {
     throw new Error(
-      '[opencode-memory] model target is not supported by the OpenCode adapter yet; use capture.agent to pin a model',
+      '[agent-memory] capture.agent 已弃用：模型请配置 capture.model（未配置则使用宿主默认模型）',
     );
+  }
+  const rawTarget = (rawCapture as { target?: any }).target;
+  if (rawTarget?.kind === 'agent') {
+    throw new Error(
+      '[agent-memory] capture.target.kind=agent 已弃用：模型请配置 capture.model（未配置则使用宿主默认模型）',
+    );
+  }
+  let model = (rawCapture as { model?: { provider: string; model: string; variant?: string } }).model;
+  if (rawTarget && model) {
+    throw new Error('[agent-memory] capture.model 与 capture.target 不能同时配置');
+  }
+  if (!model && rawTarget?.kind === 'model') {
+    model = { provider: rawTarget.provider, model: rawTarget.model };
+  }
+  if (model) {
+    if (model.provider.includes('://') || model.provider.includes('@')) {
+      throw new Error('[agent-memory] capture.model.provider 必须是 provider 名称，不是 URL');
+    }
   }
   const capture = {
     enabled: false,
@@ -353,11 +430,20 @@ export const v1Plugin: Plugin = async (
     trustRoleAsOrigin: false,
     maxCandidates: 8,
     ...rawCapture,
-    agent:
-      targetCheck.target?.kind === 'agent'
-        ? targetCheck.target.name
-        : (rawCapture as { agent?: string }).agent,
+    agent: undefined,
+    model,
+    instructionsFile: (rawCapture as { instructionsFile?: string }).instructionsFile,
   };
+
+  // 规则文件优先级：显式 capture.instructionsFile > 自动安装的模板 > 内置默认。
+  // 首次启用时落一份可编辑模板（只写插件自有文件，已存在不覆盖）。
+  let effectiveInstructionsFile = capture.instructionsFile;
+  // 测试环境不写用户目录；真实宿主首次启用时自动落模板。
+  if (!effectiveInstructionsFile && capture.enabled && process.env.NODE_ENV !== 'test') {
+    const autoPath = defaultRulesPath();
+    ensureRulesTemplate(autoPath);
+    if (existsSync(autoPath)) effectiveInstructionsFile = autoPath;
+  }
   const recall = config.data.recall;
 
   return {
@@ -376,6 +462,8 @@ export const v1Plugin: Plugin = async (
             capture.agent,
             capture.maxCandidates,
             capture.trustRoleAsOrigin,
+            capture.model,
+            effectiveInstructionsFile,
           );
         },
       },
@@ -847,6 +935,8 @@ export const v1Plugin: Plugin = async (
             [{ id, role: 'assistant', text, synthetic: false, origin: 'model' }],
             capture.agent,
             capture.maxCandidates,
+            capture.model,
+            effectiveInstructionsFile,
           );
         } catch (error) {
           logError(client, 'Capture extraction failed', error);

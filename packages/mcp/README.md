@@ -120,6 +120,37 @@ Full configuration:
 
 Configuration is strictly validated. Unknown fields, relative database paths, and missing project scopes fail startup.
 
+## LLM extraction (optional)
+
+`extraction` enables LLM extraction and registers the `memory_extract` tool. Material is treated as untrusted `origin='model-report'` input: it is redacted locally, passes the same safety pipeline as the OpenCode adapter, and only produces pending candidates.
+
+```jsonc
+{
+  "extraction": {
+    "enabled": true,
+    "allowMcpExtract": true,
+    "provider": { "baseUrl": "https://<host>/v1", "model": "<model>", "apiKeyEnv": "MY_EXTRACTOR_KEY" },
+    "instructionsFile": "/absolute/path/memory-capture.rules.md",
+    "maxCandidates": 8
+  }
+}
+```
+
+| Field | Type | Default | Meaning |
+|---|---|---|---|
+| `extraction.enabled` | boolean | `false` | Enable extraction; required by `memory_extract` |
+| `extraction.allowMcpExtract` | boolean | `false` | Register the `memory_extract` tool |
+| `extraction.provider.baseUrl` | string | none | openai-compatible endpoint |
+| `extraction.provider.model` | string | none | Model name |
+| `extraction.provider.apiKeyEnv` | string | none | Environment variable name holding the API key (read in-process only) |
+| `extraction.instructionsFile` | string | none | User rules markdown; bundled defaults when omitted |
+| `extraction.maxCandidates` | integer | `8` | Candidates per run (1..20) |
+| `extraction.maxInputChars` | integer | `60000` | Material character cap |
+| `extraction.maxOutputTokens` | integer | `1024` | Output token cap |
+| `extraction.timeoutMs` | integer | `30000` | Generation timeout |
+
+Rules are composed as user rules followed by program constraints; the program constraints take precedence on conflict. Real-model end-to-end for MCP is not yet verified.
+
 ## Recall configuration
 
 ```jsonc

@@ -1,3 +1,5 @@
+> 注：规则层已由 `openspec/changes/2026-11-26-auto-capture-whitelist` 收敛为正向白名单；本文件描述的是该变更前的矩阵，Q/E2/S2 不再产生写入。
+
 ## ADDED Requirements
 
 ### Requirement: 自动采集（v2）
