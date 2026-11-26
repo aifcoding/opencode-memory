@@ -8,6 +8,14 @@ OpenCode 本地持久记忆插件，基于 [`@aifcoding/memory-core`](https://gi
 
 前置条件：OpenCode 与 Bun。
 
+推荐用 OpenCode 官方命令安装（自动安装包并写入全局配置，无需手改 `opencode.jsonc`）：
+
+```bash
+opencode plugin add @aifcoding/opencode-memory@next
+```
+
+首次加载自动生成 `~/.config/opencode/agent-memory.jsonc`（默认开关，LLM 提取关闭）和 `~/.config/opencode/memory-capture.rules.md`（可编辑规则模板），数据库自动创建。
+
 同一份包同时支持 OpenCode v1 和 v2。
 
 v1（1.18.29+）使用 `plugin`：

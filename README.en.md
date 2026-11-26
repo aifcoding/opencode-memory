@@ -48,7 +48,19 @@ Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowled
 
 ### Use the OpenCode adapter
 
-The same package supports OpenCode v1 and v2.
+Install with the official OpenCode command (it installs the package and writes the global config for you — no manual `opencode.jsonc` edit):
+
+```bash
+opencode plugin add @aifcoding/opencode-memory@next
+```
+
+On first load the plugin generates:
+
+- `~/.config/opencode/agent-memory.jsonc`: default switches (auto capture/recall on, LLM extraction off), editable
+- `~/.config/opencode/memory-capture.rules.md`: editable extraction-rules template
+- SQLite database: `~/.local/share/opencode/memory/memory.db`
+
+The same package supports OpenCode v1 and v2. For manual installation, declare it per host version:
 
 **v1 (1.18.29+)** uses `plugin`:
 
@@ -82,7 +94,7 @@ The model may call `memory_store`; an example reply:
 已记住 (id=1) Bun 包管理约定
 ```
 
-Optional minimal configuration goes in `~/.config/opencode/agent-memory.jsonc`; tuple options take precedence:
+Optional minimal configuration goes in `~/.config/opencode/agent-memory.jsonc`; tuple options take precedence. See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#完整配置示例全部字段) for every field and a copyable demo:
 
 ```jsonc
 { "dbPath": "/Users/you/.local/share/opencode/memory/memory.db", "pinQuota": 8000 }

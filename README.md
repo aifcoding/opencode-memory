@@ -48,7 +48,19 @@
 
 ### 使用 OpenCode 适配器
 
-同一份包同时支持 OpenCode v1 和 v2。
+推荐用 OpenCode 官方命令安装（自动安装包并写入全局配置，无需手改 `opencode.jsonc`）：
+
+```bash
+opencode plugin add @aifcoding/opencode-memory@next
+```
+
+首次加载会自动生成：
+
+- `~/.config/opencode/agent-memory.jsonc`：默认开关（自动采集/召回开启，LLM 提取关闭），可编辑
+- `~/.config/opencode/memory-capture.rules.md`：可编辑的提取规则模板
+- SQLite 数据库：`~/.local/share/opencode/memory/memory.db`
+
+同一份包同时支持 OpenCode v1 和 v2。手动安装时按宿主版本声明：
 
 **v1（1.18.29+）** 使用 `plugin`：
 
@@ -82,7 +94,7 @@ OpenCode 启动时会通过 Bun 自动安装并缓存插件。
 已记住 (id=1) Bun 包管理约定
 ```
 
-最小配置（可选）写入 `~/.config/opencode/agent-memory.jsonc`；tuple options 优先于文件配置：
+最小配置（可选）写入 `~/.config/opencode/agent-memory.jsonc`；tuple options 优先于文件配置。完整字段说明与可复制 demo 见 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#完整配置示例全部字段)：
 
 ```jsonc
 { "dbPath": "/Users/you/.local/share/opencode/memory/memory.db", "pinQuota": 8000 }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { join, isAbsolute } from 'node:path';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parse as parseJsonc, printParseErrorCode, type ParseError } from 'jsonc-parser';
 import type { Plugin, PluginInput, ToolContext } from '@opencode-ai/plugin';
 import { escapeXmlText, renderPinnedBlock, renderPinnedEntry } from '@aifcoding/memory-core';
@@ -295,15 +295,54 @@ function opencodeConfigDir(): string {
   return join(process.env.XDG_CONFIG_HOME ?? join(process.env.HOME ?? '', '.config'), 'opencode');
 }
 
+/** 独立配置文件候选名：新名优先，旧名只做兼容读取。 */
+const CONFIG_FILE_NAMES = [
+  'agent-memory.jsonc',
+  'agent-memory.json',
+  'opencode-memory.jsonc',
+  'opencode-memory.json',
+] as const;
+
+/**
+ * 首次加载自动生成的配置模板。
+ * 只写缺失文件；不覆盖用户已有配置；JSONC 注释便于用户按需打开开关。
+ */
+export const CONFIG_FILE_TEMPLATE = `{
+  // agent-memory 配置（首次加载自动生成，可编辑）
+  // 未配置的字段使用内置默认值；opencode.jsonc 中该插件的 options 优先于本文件。
+  "autoCapture": { "enabled": true, "mode": "on", "maxWritesPerTurn": 3 },
+  "autoRecall": { "mode": "auto", "maxItems": 3, "maxCharacters": 300 },
+  "capture": {
+    // LLM 辅助提取默认关闭：开启后会把脱敏后的会话材料发给模型，可能产生费用。
+    "enabled": false,
+    // 开启后建议固定模型，避免依赖宿主默认模型：
+    // "model": { "provider": "deepseek", "model": "deepseek-flash" },
+    "onCompaction": true,
+    "maxCandidates": 8
+  }
+}
+`;
+
+/**
+ * 首次加载时生成默认配置文件（agent-memory.jsonc）。
+ * 任一配置文件已存在则跳过；失败不阻断插件加载。
+ */
+export function ensureConfigFile(configDir?: string): string | undefined {
+  const dir = configDir ?? opencodeConfigDir();
+  if (CONFIG_FILE_NAMES.some((name) => existsSync(join(dir, name)))) return undefined;
+  const path = join(dir, 'agent-memory.jsonc');
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(path, CONFIG_FILE_TEMPLATE, { flag: 'wx' });
+    return path;
+  } catch {
+    return undefined;
+  }
+}
+
 // 读取独立配置文件（可选；.jsonc 优先，.json 兜底）。文件不存在则忽略，读取/解析失败显式报错。
 export function readConfigFile(): Record<string, unknown> {
-  // 新名优先；旧名只做兼容读取，不自动迁移。
-  for (const name of [
-    'agent-memory.jsonc',
-    'agent-memory.json',
-    'opencode-memory.jsonc',
-    'opencode-memory.json',
-  ]) {
+  for (const name of CONFIG_FILE_NAMES) {
     const configPath = join(opencodeConfigDir(), name);
     let raw: string;
     try {
@@ -368,6 +407,8 @@ export const v1Plugin: Plugin = async (
 ) => {
   const client = input.client;
   const fileConfig = readConfigFile();
+  // 首次加载生成默认配置文件（用户目录；测试环境不写）。
+  if (process.env.NODE_ENV !== 'test') ensureConfigFile();
   // 合并文件配置与 tuple options，统一严格校验（options 覆盖文件配置）
   const config = ConfigSchema.safeParse({
     ...fileConfig,
@@ -438,11 +479,11 @@ export const v1Plugin: Plugin = async (
   // 规则文件优先级：显式 capture.instructionsFile > 自动安装的模板 > 内置默认。
   // 首次启用时落一份可编辑模板（只写插件自有文件，已存在不覆盖）。
   let effectiveInstructionsFile = capture.instructionsFile;
-  // 测试环境不写用户目录；真实宿主首次启用时自动落模板。
-  if (!effectiveInstructionsFile && capture.enabled && process.env.NODE_ENV !== 'test') {
+  // 规则模板：首次加载即生成（与 capture.enabled 无关），已存在不覆盖；测试环境不写用户目录。
+  if (!effectiveInstructionsFile && process.env.NODE_ENV !== 'test') {
     const autoPath = defaultRulesPath();
     ensureRulesTemplate(autoPath);
-    if (existsSync(autoPath)) effectiveInstructionsFile = autoPath;
+    if (capture.enabled && existsSync(autoPath)) effectiveInstructionsFile = autoPath;
   }
   const recall = config.data.recall;
 
