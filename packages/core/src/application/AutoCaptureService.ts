@@ -13,7 +13,9 @@ import {
 
 /** 凭据形态：命中即整条拒绝自动写入。正则只作拒绝信号，不承诺识别所有秘密。 */
 const CREDENTIAL_PATTERNS: RegExp[] = [
-  /\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*[:=]\s*\S+/i,
+  /\b(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*[:=：]\s*\S+/i,
+  // 大写环境变量风格键名：MY_DB_PWD=xxx / API_KEY: xxx
+  /\b[A-Z][A-Z0-9_]*(?:PWD|PASSWD|PASSWORD|KEY|TOKEN|SECRET)\s*[:=：]\s*\S+/, 
   /:\/\/[^/\s:@]+:[^/\s@]+@/,
   /\b(?:sk|pk|ghp|xoxb)-[A-Za-z0-9_-]{16,}\b/,
   /\b[A-Za-z0-9+/]{40,}={0,2}\b/,
@@ -32,8 +34,15 @@ const CREDENTIAL_PATTERNS: RegExp[] = [
   /\*\*\s*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key)\s*\*\*\s*[:=]\s*\S+/i,
 ];
 
-/** E1：只认单元开头的明确保存指令，避免「文档里写着'记住…'」被当成保存意图。 */
-const EXPLICIT_SAVE = /^(?:请)?(?:记住|记一下|保存下来)\s*(?:[:：,，]\s*)?([\s\S]{2,400})$/;
+/**
+ * E1：只认单元开头的明确保存指令，避免「文档里写着'记住…'」被当成保存意图。
+ * 前缀与正文分开解析：正文上限对齐存储上限，不按问句/长度做质量判断。
+ * `记住：甲` 的冒号由分隔组消费，不会残留在正文里；`记住了` 这类确认语不算指令。
+ */
+const EXPLICIT_SAVE =
+  /^(?:请)?(?:记住|记一下|保存下来)(?!了|吧|啊|哦|嗯|哈)(?:\s*[:：,，]\s*)?([\s\S]*)$/;
+/** 否定的是「保存」这个动作本身（不要记住 X），而不是保存一条禁止性规则（记住：不要做 X）。 */
+const NEGATED_SAVE = /^(?:请)?(?:不要|别|不用|无需|不需要)\s*(?:记住|记一下|保存下来|记下)/;
 /** E2：弱 explicit 措辞。 */
 const EXPLICIT_WEAK = /(?:配置是|以后都|下次用)/;
 
@@ -64,6 +73,8 @@ const ABS_PATH_VALUE = /^\/[^\s"'<>，。；、]+$/;
 const ABS_PATH_INLINE = /(?:^|[\s(])\/(?:Users|opt|var|etc|tmp|home|srv)\/[^\s"'<>，。；、]+/;
 
 const ENTITY_ID = /^[A-Za-z][A-Za-z0-9._-]{1,}$/;
+/** 通用绑定实体形状：纯 ASCII 必须无空格；含中文可带空格（如「kit 仓库」）。 */
+const BINDING_ENTITY = /^(?:[A-Za-z][A-Za-z0-9._-]*|.*[\u4e00-\u9fa5].*)$/;
 const DOTTED_BINDING = /^([A-Za-z][A-Za-z0-9._-]*)\.([A-Za-z][A-Za-z0-9]*)\s*=\s*([^\s，。；、？?！!]+)$/;
 const CN_BINDING =
   /^([A-Za-z][A-Za-z0-9._-]*)\s*(?:的)?\s*(地址|接口地址|url|endpoint|端口|port|版本|version|路径|path|目录)\s*(?:是|为|=|：|:)\s*([^\s，。；、？?！!]+)$/i;
@@ -93,12 +104,15 @@ const REFERENCE = /上次|之前|以前|照旧|继续之前|上次那个|还记�
 const AGREEMENT_ONLY = /^(?:好|好的|可以|行|对|嗯|是|收到|了解|明白|没问题|ok|随便|都行)[。.!！]?$/i;
 const QA_FILLER = /^(?:你再看看|再看|怎么处理|怎么办|然后呢|接下来呢|具体呢)[。.!！]?$/;
 
-/** 纯指代正文：短且只有指代；以「这个」开头但有实义的长句不算。 */
+/** 纯指代正文：只允许精确指代词，不允许任意实义尾巴（「这个端口8080」是自包含正文）。 */
 const DEICTIC =
-  /^(?:这个|那个|这些|那些|这|那|它|这里|那里|上面|下面|上述内容|上面那段|(?:我们)?(?:刚才|之前|前面|上面)(?:说的|提到的|讲的)?(?:那个|这一段|那段)?)[^，。；\n]{0,6}$/;
-/** 较长的口语指代：「我们刚才讨论的那个方案」，必须以指代名词结尾，避免误伤有实义的句子。 */
+  /^(?:这个|那个|这些|那些|这|那|它|这里|那里|上面|下面|上述内容|上面那段|(?:我们)?(?:刚才|之前|前面|上面)(?:说的|提到的|讲的)?)(?:东西|内容|配置|方案|信息|结论|那段|这一段|这段话)?[。.!！]?$/;
+/** 较长的口语指代：「我们刚才讨论的那个方案」，必须以指代名词结尾。 */
 const DEICTIC_LONG =
-  /^(?:我们)?(?:刚才|之前|前面|上面)(?:讨论|说|提到|讲)的?.{0,12}(?:那个|方案|内容|结论|部分|地址|配置|字段)$/;
+  /^(?:我们)?(?:刚才|之前|前面|上面)(?:讨论|说|提到|讲)的?.{0,12}(?:那个|方案|内容|结论|部分|地址|配置|字段)[。.!！]?$/;
+function isDeicticOnly(body: string): boolean {
+  return DEICTIC.test(body) || DEICTIC_LONG.test(body);
+}
 /** 偏好类表达（以后/别/默认/优先），存为 preference 而不是 fact。 */
 const PREFERENCE = /(?:以后|下次|别|不要|优先|默认|习惯)/;
 
@@ -182,8 +196,25 @@ export function normalizeTitle(text: string): string {
 }
 
 /** 把命中的凭据片段替换为 [REDACTED]，返回命中次数；用于提取材料脱敏。 */
+/** 整段就是一条凭据赋值（标签 + 值），没有其他有效正文。 */
+const CREDENTIAL_ASSIGNMENT_ONLY =
+  /^\s*(?:[^\s:=是，。]{0,20}\s*)?(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|密码|口令|密钥|令牌|验证码|账号密码)\s*(?:是|为|[:：=])\s*[^\s，。；]+[\s。；;]*$/i;
+
+/** 脱敏后只剩凭据标签/分隔符（如 `api[REDACTED]`、`数据库[REDACTED]`）→ 视为仅凭据。 */
+const CREDENTIAL_RESIDUE_WORDS =
+  /\[REDACTED\]|\b(?:api|key|token|secret|password|passwd|pwd|access|private|public|db|database)\b|密钥|密码|口令|令牌|验证码|账号密码|数据库|凭据/gi;
+function isCredentialOnlyResidue(text: string): boolean {
+  const residue = text
+    .replace(CREDENTIAL_RESIDUE_WORDS, '')
+    .replace(/[\s:：=，,。；;'"`·-]/g, '');
+  return residue.length === 0;
+}
+
 const SAFE_CREDENTIAL_VALUE =
-  /^(?:env|环境变量|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|xxx+|<[^>]{1,40}>|\*{3,})$/i;
+  /^(?:(?:[Ee][Nn][Vv]|环境变量)(?:\s*[:：=]?\s*[A-Z][A-Z0-9_]*)?|\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|[Xx]{3,}|\*{3,})$/;
+
+/** 环境变量引用（安全，不是秘密本体）。 */
+const ENV_REF = /(?:(?:[Ee][Nn][Vv]|环境变量)\s*[:：=]?\s*|\$)[A-Z][A-Z0-9_]*/;
 
 export function redactCredentialText(text: string): { text: string; hits: number } {
   let hits = 0;
@@ -194,7 +225,7 @@ export function redactCredentialText(text: string): { text: string; hits: number
     out = out.replace(global, (match) => {
       // 只有「值整体就是占位符」才放行；`password=环境变量abc` 仍要脱敏。
       const value = match
-        .replace(/^[^:=是]*[:=是]\s*/s, '')
+        .replace(/^[^:=：是为]*[:=：是为]\s*/s, '')
         .replace(/["'\]\}\)]+$/, '')
         .trim();
       if (value && SAFE_CREDENTIAL_VALUE.test(value)) return match;
@@ -248,10 +279,26 @@ function validValue(field: Field, raw: string): boolean {
 /** 抽取文本中的结构化值（URL / host:port / 绝对路径 / semver），去重。 */
 function structuredValues(text: string): string[] {
   const values = new Set<string>();
-  for (const match of text.matchAll(new RegExp(URL_INLINE.source, 'gi'))) values.add(match[0]);
-  for (const match of text.matchAll(new RegExp(HOST_PORT_INLINE.source, 'gi'))) values.add(match[0]);
+  const urlRanges: Array<[number, number]> = [];
+  for (const match of text.matchAll(new RegExp(URL_INLINE.source, 'gi'))) {
+    values.add(match[0]);
+    urlRanges.push([match.index ?? 0, (match.index ?? 0) + match[0].length]);
+  }
+  for (const match of text.matchAll(new RegExp(HOST_PORT_INLINE.source, 'gi'))) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    // URL 内的 host:port 属于同一个对象，不重复计数。
+    if (urlRanges.some(([from, to]) => start >= from && end <= to)) continue;
+    values.add(match[0]);
+  }
   for (const match of text.matchAll(new RegExp(ABS_PATH_INLINE.source, 'gi'))) values.add(match[0].trim());
-  for (const match of text.matchAll(new RegExp(SEMVER_INLINE.source, 'gi'))) values.add(match[0]);
+  for (const match of text.matchAll(new RegExp(SEMVER_INLINE.source, 'gi'))) {
+    const start = match.index ?? 0;
+    const end = start + match[0].length;
+    // URL / host:port 里的数字片段不是版本号。
+    if (urlRanges.some(([from, to]) => start >= from && end <= to)) continue;
+    values.add(match[0]);
+  }
   return [...values];
 }
 
@@ -271,6 +318,10 @@ function entityKey(text: string): string {
 /** 系统/agent 注入块；剥离后剩下的才是真实内容。 */
 const SYNTHETIC_BLOCK =
   /<(mem_block|system-reminder|background-result|fork-notice|subagent-update)\b[^>]*>[\s\S]*?<\/\1>/gi;
+
+function stripSyntheticBlocks(text: string): string {
+  return text.replace(SYNTHETIC_BLOCK, ' ').trim();
+}
 
 function stripSynthetic(text: string): string {
   return text
@@ -303,41 +354,12 @@ function splitUnits(text: string): string[] {
   return units;
 }
 
-/** 前文指纹：稳定、不含时间，用于区分不同上下文下的同句指代。 */
-function contextFingerprint(ctx: RouterContext): string {
-  return createDigest(`${ctx.previousUserText ?? ''}\u0000${ctx.previousAssistantText ?? ''}`).slice(0, 8);
-}
-
-function clip(text: string | undefined, limit = CONTEXT_LIMIT): string {
-  if (!text) return '（无）';
-  const compact = text.replace(/\s+/g, ' ').trim();
-  return compact.length > limit ? `${compact.slice(0, limit)}…（已截断）` : compact;
-}
-
-/** 指代式保存：保存请求明确、对象不明，落待澄清候选。 */
-function buildDeicticCandidate(text: string, body: string, ctx: RouterContext): AutoCandidate | undefined {
-  const preview = clip(body || '指代保存', 24);
-  const title = normalizeTitle(`待澄清保存 ${preview} ${contextFingerprint(ctx)}`);
-  if (!title) return undefined;
-  const content = [
-    '待澄清：指代未解析，不可当事实使用',
-    `保存请求：${text}`,
-    `来源指纹：${contextFingerprint(ctx)}`,
-    `用户前文：${clip(ctx.previousUserText)}`,
-    `助手前文：${clip(ctx.previousAssistantText)}`,
-    '状态：指代未解析（自动采集，待核实；助手陈述未经用户确认）',
-    `时间：${new Date(ctx.now).toISOString()}`,
-  ].join('\n');
-  return {
-    title,
-    content,
-    summary: `待澄清保存：${preview}`,
-    type: 'fact',
-    tags: ['auto', 'auto:explicit', 'auto:rule:E2', 'auto:deictic'],
-    signal: 'explicit',
-    entityTag: 'auto:entity:note',
-    rule: 'E2',
-  };
+/** 指代保存：只在上一轮人工消息里能唯一确定一个结构化对象时保存；助手内容不作事实来源。 */
+function resolveDeictic(ctx: RouterContext): string | undefined {
+  const text = ctx.previousUserText;
+  if (!text?.trim()) return undefined;
+  if (structuredValues(text).length === 1) return text.trim();
+  return undefined;
 }
 
 function buildCandidate(
@@ -387,8 +409,13 @@ function dropped(rule: AutoRule, text: string, reason: string): AutoRoutedUnit {
   return { rule, text, reason };
 }
 
+/** 只有带明确记忆意图的纠正才允许更新既有条目；普通聊天里的纠正不碰记忆。 */
+const EXPLICIT_UPDATE_INTENT =
+  /(?:记住|记一下|保存下来|更正|纠正|改为|改成|更新(?:这条|记忆|记录))/;
+
 /** 纠正：只有唯一匹配的低信任目标且旧值相符才允许更新。 */
 function routeCorrection(text: string, ctx: RouterContext): AutoRoutedUnit | undefined {
+  if (!EXPLICIT_UPDATE_INTENT.test(text)) return undefined;
   const pair = text.match(CORRECTION_PAIR);
   const set = text.match(CORRECTION_SET);
   if (!pair && !set) return undefined;
@@ -457,7 +484,14 @@ function routeCorrection(text: string, ctx: RouterContext): AutoRoutedUnit | und
     text,
     targetId: target.id,
     oldValue,
-    candidate: buildCandidate(text, 'C1', 'correction', ctx.now, target.title),
+    // 只存规范化后的新状态，不把「不是旧值，是新值」的叙述留在记忆里。
+    candidate: buildCandidate(
+      `${target.title} = ${fieldValue.value}`,
+      'C1',
+      'correction',
+      ctx.now,
+      target.title,
+    ),
   };
 }
 
@@ -523,6 +557,9 @@ function routeBinding(text: string, ctx: RouterContext): AutoRoutedUnit | undefi
     const generic = text.match(GENERIC_BINDING);
     if (generic) {
       const entity = generic[1]!.trim();
+      if (!BINDING_ENTITY.test(entity)) {
+        return dropped('N', text, 'invalid binding entity');
+      }
       const fieldName = generic[2]!.toLowerCase();
       const declared = FIELD_ALIASES[fieldName];
       const value = generic[3]!;
@@ -577,104 +614,71 @@ function statementGate(text: string): string | undefined {
 }
 
 function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
-  const blocked = statementGate(text);
-  if (blocked) return dropped('N', text, blocked);
+  const trimmed = text.trim();
 
-  // 1) 纠正优先：不得被 explicit/structured 绕过。
+  // 1) 明确纠正：只有带明确记忆意图的纠正才更新既有条目；聊天里的普通纠正不碰记忆。
   const correction = routeCorrection(text, ctx);
-  if (correction) return correction;
+  if (correction?.rule === 'C1') return correction;
 
-  // 2) E1 明确保存指令。
+  // 2) 显式保存：记住/记一下/保存下来 + 正文。不评价价值、不降候选、不按问句/长度拒绝。
   const save = text.match(EXPLICIT_SAVE);
   if (save) {
     const body = save[1]!.trim();
-    if (QUESTION_LIKE.test(body)) return dropped('N', text, 'save body is a question');
-    if (/^(?:不要|别)(?:保存|记)/.test(body)) return dropped('N', text, 'negated save');
-    // 纯指代且无结构化值：按白名单设计丢弃（不直写、不产兜底候选）。
-    if ((DEICTIC.test(body) || DEICTIC_LONG.test(body)) && !hasStructuredValue(body)) {
-      return dropped('N', text, 'deictic save without explicit object');
+    // 只有「不要记住 X」这类否定动作才取消；「记住：不要做 X」是保存一条禁止规则。
+    if (NEGATED_SAVE.test(trimmed)) return dropped('N', text, 'negated save');
+    // 纯指代：仅在上下文能唯一确定对象时保存，否则明确澄清（不能静默当没发生）。
+    if (isDeicticOnly(body) && !hasStructuredValue(body)) {
+      const resolved = resolveDeictic(ctx);
+      if (!resolved) return dropped('N', text, 'deictic save needs clarification');
+      const candidate = buildCandidate(resolved, 'E1', 'explicit', ctx.now);
+      if (candidate && PREFERENCE.test(resolved)) candidate.type = 'preference';
+      return { rule: 'E1', text, candidate };
     }
-    if (body.length < 4) return dropped('N', text, 'save body too short');
-    if (
-      body.includes('[REDACTED]') &&
-      body.replace(/\[REDACTED\]/g, '').replace(/[\s:：=，,]/g, '').length < 4
-    ) {
+    if (!body || /^[\p{P}\s]+$/u.test(body)) {
+      return dropped('N', text, 'explicit save without content');
+    }
+    if (CREDENTIAL_ASSIGNMENT_ONLY.test(body) && !ENV_REF.test(body)) {
       return dropped('N', text, 'credential-only save');
     }
-    // E1 正文按白名单形态解析：配置绑定归一为 S1（直写）；完整决策/约定直写；
-    // 其余完整内容只产候选；解析不完整或过短丢弃。
-    const bodyBinding = routeBinding(body, ctx);
-    if (bodyBinding) {
-      if (bodyBinding.rule === 'S1') return { ...bodyBinding, rule: 'S1' };
-      if (bodyBinding.rule === 'C1' || bodyBinding.rule === 'C2') return bodyBinding;
-      return dropped('N', text, 'explicit save with invalid binding');
+    const redacted = redactCredentialText(body);
+    // 只有在真正命中凭据、且脱敏后只剩凭据标签时才判定「仅凭据」。
+    if (redacted.hits > 0 && isCredentialOnlyResidue(redacted.text)) {
+      return dropped('N', text, 'credential-only save');
     }
-    const bodyDecision = body.match(DECISION_WITH_BASIS) ?? body.match(DECISION_DIRECT);
-    if (bodyDecision && /(原因|因为|由于|理由)/.test(body)) {
-      return {
-        rule: 'D1',
-        text,
-        candidate: buildCandidate(body, 'D1', 'decision', ctx.now, `decision ${bodyDecision[1]!.trim()}`),
-      };
-    }
-    if (
-      PREFERENCE.test(body) &&
-      /(以后|统一|禁止|不要|默认|一律|全部)/.test(body) &&
-      body.replace(/\s+/g, '').length >= 6
-    ) {
-      const candidate = buildCandidate(body, 'E1', 'explicit', ctx.now);
+    const candidate = buildCandidate(redacted.text, 'E1', 'explicit', ctx.now);
+    if (candidate && PREFERENCE.test(redacted.text)) candidate.type = 'preference';
+    return { rule: 'E1', text, candidate };
+  }
+  // 有保存指令无正文：意图明确但对象缺失，记录澄清原因。
+  if (EXPLICIT_SAVE.test(trimmed) && !text.match(EXPLICIT_SAVE)?.[1]?.trim()) {
+    return dropped('N', text, 'explicit save without content');
+  }
+
+  // 3) 完整顶层行为指令：以后/统一/禁止/不要/默认/一律（非问句、有明确对象）。
+  if (NEGATED_SAVE.test(trimmed)) return dropped('N', text, 'negated save');
+  const behavior =
+    trimmed.match(/^(?:本项目\s*[：:，,]?\s*)?(?:以后|下次)[，,：:]?\s*(.+)$/) ??
+    trimmed.match(/^(?:本项目\s*[：:，,]?\s*)?(?:统一|一律|全部|禁止|不要)\s*(.+)$/) ??
+    trimmed.match(/^(?:本项目\s*[：:，,]?\s*)?默认\s*(?:使用|走|用|开启|关闭|只|必须)(.+)$/) ??
+    trimmed.match(/^(?:from now on|always|never|default to)\b\s*(.+)$/i);
+  if (behavior) {
+    const body = behavior[1]!.trim();
+    const objectLike = body.length >= 2 && !/^(?:再|回头|继续|看|如果|假如|假设)/.test(body);
+    if (!QUESTION_LIKE.test(trimmed) && !HEDGE_OR_EXAMPLE.test(trimmed) && objectLike) {
+      const candidate = buildCandidate(trimmed, 'E1', 'explicit', ctx.now);
       if (candidate) candidate.type = 'preference';
       return { rule: 'E1', text, candidate };
     }
-    const facts = body.split(/(?<=[。！？!?\n；;])/).map((part) => part.trim()).filter((part) => part.length >= 2);
-    if (facts.length > 1) {
-      return {
-        rule: 'E2',
-        text,
-        candidate: buildCandidate(body, 'E2', 'explicit', ctx.now),
-        reason: 'multiple facts in one save',
-      };
-    }
-    if (body.replace(/\s+/g, '').length < 6) return dropped('N', text, 'save body too short');
-    return {
-      rule: 'E2',
-      text,
-      candidate: buildCandidate(body, 'E2', 'explicit', ctx.now),
-      reason: 'complete statement without whitelist form, kept as candidate',
-    };
   }
 
-  // 3) S1 完整绑定 / S2 不完整结构化材料。
-  const binding = routeBinding(text, ctx);
-  if (binding) return binding;
-
-  // 4) D1 明确选型 / D2 其他决策。
-  const decision = text.match(DECISION_DIRECT);
-  if (decision) {
-    const choice = decision[1]!;
-    return {
-      rule: 'D1',
-      text,
-      candidate: buildCandidate(text, 'D1', 'decision', ctx.now, `decision ${choice}`),
-    };
+  // 4) 隐式内容：规则层一律不采（交给压缩/手动 LLM 提取）。
+  //    纠正意图存在但目标不唯一/不合法时，保留纠正的具体原因，便于解释为什么不更新。
+  if (correction?.rule === 'C2') {
+    return dropped('N', text, correction.reason ?? 'correction target not determinate');
   }
-  if (DECISION_WORD.test(text) && !QUESTION_LIKE.test(text) && !HEDGE.test(text)) {
-    if (/[A-Za-z][A-Za-z0-9.+-]{1,}/.test(text) || QUOTED.test(text)) {
-      return {
-        rule: 'D2',
-        text,
-        candidate: buildCandidate(text, 'D2', 'decision', ctx.now),
-      };
-    }
-    return dropped('N', text, 'decision without object');
-  }
-
-  // 7) 只有结构化值、没有字段线索 → 丢弃。Q（问答对）不再产生任何写入。
-  if (hasStructuredValue(text)) return dropped('N', text, 'bare structured value');
-  return dropped('N', text, 'no admission rule matched');
+  return dropped('N', text, 'no explicit memory instruction');
 }
 
-/** 只做路由（不写库）：供测试与统计使用。 */
 export function routeText(
   input: AutoCaptureInput & { autoEntries?: MemoryEntry[] },
 ): { rules: Partial<Record<AutoRule, number>>; direct: AutoRoutedUnit[]; pending: AutoRoutedUnit[]; dropped: AutoRoutedUnit[] } {
@@ -686,10 +690,13 @@ export function routeText(
   };
   // 来源准入：只有人工材料能作为「用户陈述」；注入/未知来源一律不采。
   if (input.current?.origin !== 'human') return result;
-  const text = stripSynthetic(input.current.text);
+  // 显式保存：只剥离注入块，保留代码块/缩进/换行，正文原样入库；凭据在 routeUnit 内按正文脱敏。
+  const blocksStripped = stripSyntheticBlocks(input.current.text);
+  const explicitWhole = EXPLICIT_SAVE.test(blocksStripped);
+  const text = explicitWhole ? blocksStripped : stripSynthetic(input.current.text);
   if (!text) return result;
   if (/^\s*You are (?:a|an) /i.test(text) && text.length > 200) return result;
-  const safeText = redactCredentialText(text).text;
+  const safeText = explicitWhole ? text : redactCredentialText(text).text;
   if (!safeText.trim()) return result;
 
   const ctx: RouterContext = {
@@ -700,25 +707,16 @@ export function routeText(
       input.previousAssistant?.origin === 'model' ? input.previousAssistant.text : undefined,
     now: input.now ?? Date.now(),
   };
-  let used = 0;
-  for (const unit of splitUnits(safeText)) {
+  const whole = safeText.trim();
+  const units = EXPLICIT_SAVE.test(whole) ? [whole] : splitUnits(safeText);
+  for (const unit of units) {
     const routed = routeUnit(unit, ctx);
     result.rules[routed.rule] = (result.rules[routed.rule] ?? 0) + 1;
-    if (routed.rule === 'N') {
-      result.dropped.push(routed);
-      continue;
-    }
-    if (used >= MAX_PER_MESSAGE) {
-      result.pending.push({ ...routed, reason: 'per-message cap reached, kept as candidate' });
-      continue;
-    }
-    used += 1;
-    if (routed.rule === 'E1' || routed.rule === 'S1' || routed.rule === 'D1') {
-      result.direct.push(routed);
-    } else if (routed.rule === 'C1') {
+    if (routed.rule === 'E1' || routed.rule === 'C1') {
       result.direct.push(routed);
     } else {
-      result.pending.push(routed);
+      // 规则层不再产生隐式候选；非直写一律记录丢弃原因。
+      result.dropped.push({ ...routed, rule: 'N' });
     }
   }
   return result;
@@ -732,11 +730,10 @@ export function extractCandidates(input: AutoCaptureInput): AutoCandidate[] {
     .filter((candidate): candidate is AutoCandidate => candidate !== undefined);
 }
 
+/** 只剥离本条自动生成的尾部时间戳元数据，用户正文里的「时间：…」原样保留。 */
 function stableContent(content: string): string {
   return content
-    .split('\n')
-    .filter((line) => !line.startsWith('时间：'))
-    .join('\n')
+    .replace(/\n?时间：\d{4}-\d{2}-\d{2}T[\d:.]+Z\s*$/, '')
     .trim();
 }
 
@@ -785,8 +782,8 @@ export class AutoCaptureService {
       skipped: [],
     });
     if (!this.config.enabled) return empty();
-    const limit = Math.min(Math.max(0, this.config.maxWritesPerTurn), MAX_PER_MESSAGE);
-    if (limit === 0) return empty();
+    // 规则层只处理用户明确指令：不再按 maxWritesPerTurn 截断（该额度保留给 LLM 提取/候选路径）。
+    if (this.config.maxWritesPerTurn <= 0) return empty();
 
     // 来源准入在任何读库/写库之前：注入消息（automation/压缩摘要/系统消息）不得进入规则采集。
     if (input.current?.origin !== 'human') {
@@ -810,10 +807,8 @@ export class AutoCaptureService {
     const byTitle = new Map<string, MemoryEntry>();
     for (const entry of autoEntries) byTitle.set(normalizeTitle(entry.title), entry);
 
-    const deferred: AutoRoutedUnit[] = [];
     let used = 0;
     for (const unit of routed.direct) {
-      if (used >= limit) break;
       const candidate = unit.candidate;
       if (!candidate) continue;
       try {
@@ -851,8 +846,29 @@ export class AutoCaptureService {
           continue;
         }
         if (hit) {
-          // 没有合法 C1 依据时不得按 title 覆盖既有事实：降级为待审候选。
-          deferred.push({ ...unit, reason: 'title conflict' });
+          // 标题不是身份键：同标题不同正文不覆盖既有记忆，换唯一标题新建，显式保存必须落地。
+          let title = candidate.title;
+          for (let index = 2; index <= 20; index += 1) {
+            const next = normalizeTitle(`${candidate.title} ${index}`);
+            if (next && !byTitle.has(next)) {
+              title = next;
+              break;
+            }
+          }
+          const entry = await this.manager.storeMemory({
+            title,
+            content: candidate.content,
+            summary: candidate.summary,
+            type: candidate.type,
+            tags: candidate.tags,
+            scope: input.scope,
+            origin: 'agent',
+            trust: 'low',
+          });
+          routed.createdIds.push(entry.id);
+          routed.written += 1;
+          byTitle.set(title, entry);
+          used += 1;
           continue;
         }
 
@@ -877,75 +893,7 @@ export class AutoCaptureService {
       }
     }
 
-    // 候选预算独立于直写上限；仍按单条消息上限保护，超出记录 skipped 而不是静默丢弃。
-    const PENDING_PER_MESSAGE = 6;
-    const allPending = [...routed.pending, ...deferred];
-    const pendingUnits = allPending.slice(0, PENDING_PER_MESSAGE);
-    if (allPending.length > pendingUnits.length) {
-      routed.skipped.push(`pending truncated: ${allPending.length - pendingUnits.length}`);
-    }
-    if (pendingUnits.length === 0) return routed;
-
-    try {
-      const room = await this.pendingRoom(input);
-      if (room <= 0) {
-        routed.skipped.push(`daily pending cap reached (${DAILY_PENDING_CAP})`);
-        return routed;
-      }
-      const batch = pendingUnits.slice(0, room);
-      if (batch.length < pendingUnits.length) {
-        routed.skipped.push(`daily pending cap reached (${DAILY_PENDING_CAP})`);
-      }
-      const text = stripSynthetic(input.current.text);
-      const deictic = routed.pending.some(
-        (unit) => unit.reason === 'deictic reference needs clarification',
-      );
-      const digest = createDigest(
-        deictic
-          ? `${text}\u0000${input.previousUser?.origin === 'human' ? input.previousUser.text : ''}\u0000${input.previousAssistant?.origin === 'model' ? input.previousAssistant.text : ''}`
-          : text,
-      );
-      const begun = await this.manager.beginCapture({
-        contextKey: `auto:${input.scope.scope}:${input.scope.scopeKey}:${digest}`,
-        sourceId: 'auto',
-        trigger: 'auto',
-        extractorVersion: 'auto-v1',
-        scope: input.scope,
-      });
-      if (begun.status === 'started') {
-        const drafts = batch
-          .map((unit) => unit.candidate)
-          .filter((candidate): candidate is AutoCandidate => candidate !== undefined)
-          .map(toDraft);
-        if (drafts.length > 0) {
-          const completed = await this.manager.completeCapture({
-            captureKey: begun.captureKey,
-            leaseToken: begun.leaseToken,
-            candidates: drafts,
-          });
-          routed.pendingCreated = completed.candidates.length;
-        }
-      } else if (begun.status === 'already_completed') {
-        routed.skipped.push('candidates already captured for this message');
-      } else {
-        routed.skipped.push('capture already in progress');
-      }
-    } catch (error) {
-      routed.skipped.push(
-        `candidate write failed: ${error instanceof Error ? error.message : 'unknown'}`,
-      );
-    }
     return routed;
-  }
-
-  private async pendingRoom(input: AutoCaptureInput): Promise<number> {
-    // 按「当天新增候选」计数，而不是「当前仍 pending」，避免批准后额度被重置。
-    const startOfDay = new Date().setHours(0, 0, 0, 0);
-    const today = await this.manager.countCandidatesSince({
-      scope: input.scope,
-      since: startOfDay,
-    });
-    return DAILY_PENDING_CAP - today;
   }
 }
 

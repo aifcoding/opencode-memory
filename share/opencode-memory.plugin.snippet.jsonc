@@ -1,0 +1,26 @@
+// opencode-memory 插件配置片段（可直接合并进 ~/.config/opencode/opencode.jsonc）
+// 用法：把下面 plugins 数组里的这一项，追加到你现有 "plugins" 数组中；重启 opencode 生效。
+// 注意：本文件不包含任何 provider/API key；模型默认用你宿主当前默认模型。
+{
+  "plugins": [
+    {
+      "package": "@aifcoding/opencode-memory@2.4.0-rc.4",
+      "options": {
+        // 规则采集（默认开）：只从明确的记忆形态里采集，闲聊/问句不产候选
+        "autoCapture": { "enabled": true, "mode": "on", "maxWritesPerTurn": 3 },
+
+        // LLM 提取（默认关，这里开启）：压缩会话时提取待审候选
+        "capture": {
+          "enabled": true,
+          "onCompaction": true,
+          "maxCandidates": 8
+          // 想固定提取模型时再加：
+          // "model": { "provider": "<provider-id>", "model": "<model-id>" }
+        },
+
+        // 自动召回：按当前用户问题检索并注入记忆摘要
+        "autoRecall": { "mode": "auto", "maxItems": 3, "maxCharacters": 300 }
+      }
+    }
+  ]
+}

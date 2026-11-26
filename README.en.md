@@ -274,22 +274,21 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 
 ### Automatic memory (v2)
 
-> The local source is `@aifcoding/opencode-memory@2.4.0-rc.3` (unpublished, requires `@aifcoding/memory-core@0.5.2`); on npm, `next` is still `2.3.0-rc.2` (old capture behaviour) and `latest` is `2.2.2`. This section describes the local source.
+> The local source is `@aifcoding/opencode-memory@2.4.0-rc.3` (unpublished, requires `@aifcoding/memory-core@0.5.2`); on npm, `next` is `2.4.0-rc.3` (previous behaviour) and `latest` is `2.2.2`; the local source is ahead (explicit instruction executor).
 
 On every model request, v2 runs one automatic memory pass:
 
-1. **Capture**: extracts only from the last message recognized as genuine user input; final assistant replies are not archived. Each text unit is routed by an admission matrix, and signals are not inherited across sentences:
-   - **Written directly** to `memories` (`origin=agent`, `trust=low`): S1 new complete configuration binding; C1 complete correction update; E1 explicit save whose body fully parses as a configuration binding, decision (with reason) or convention.
-   - **Queued as pending candidates** in `memory_candidates`: other complete E1 statements, non-explicit complete decisions/conventions, complete corrections that cannot be safely targeted, configuration conflicts.
-   - **Updating an existing memory**: only C1 (a whitelisted field plus a type-valid new value, exactly one matching `agent/low` entry, old value matches, CAS revision matches). Nothing else overwrites by title; conflicting content becomes a candidate.
-   - **Never inspected**: content inside fenced code blocks or quote blocks. Auto-captured entries whose title is a single broad word are also not injected by auto recall.
-   - **Dropped**: Q&A-only replies (Q removed), weak keywords (E2 removed), incomplete structured facts (S2 removed), pure references (`记住这个`), questions, hypotheses and temporary arrangements.
+1. **Capture**: executes **explicit memory instructions only**; implicit content is not captured:
+   - **Written immediately** to `memories` (`origin=agent`, `trust=low`): `记住/记一下/保存下来` + body (the whole message becomes one memory; code blocks, indentation and line breaks are preserved verbatim; no question/length/word-count quality gate, up to the storage limit); complete top-level behaviour instructions (`以后/下次/统一/禁止/默认/一律/全部`, optionally prefixed with `本项目`); explicit corrections with `更正/改成/记住` intent, a unique target and matching old value (CAS update to the new value).
+   - **Not captured**: passing configuration (`probe.port=18093`), pasted logs/JSON/tables, decision statements, Q&A pairs — no writes and no candidates at the rule layer; they are left to compaction/manual LLM extraction.
+   - **Ambiguous reference** (`记住这个` without a unique structured object): no write, no candidate, ask for clarification.
+   - **Safety boundary**: only trusted human input is executed (a `记住` inside automation or quotes is ignored); credentials are redacted, credential-only saves are rejected with a notice, and write failures are reported rather than silently turned into candidates; a different body under the same title creates a new uniquely titled entry instead of overwriting.
 2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result. Pending candidates never enter `memories`, so neither recall nor `memory_recall` returns them.
 3. **Isolation**: the automatic-memory call has an outer error handler; capture and recall are separately wrapped, but the Pin transform sits outside it. Injected content is not persisted.
 
 LLM-assisted extraction is off by default. When enabled, locally redacted conversation material is sent to the selected model (the host default model unless `capture.model` pins one); this may incur cost, and regex redaction cannot guarantee that every secret is detected.
 
-Limitations: at most 3 direct writes per message (direct writes plus candidates); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; Q&A pairs and weak signals no longer produce any writes; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
+Limitations: explicit instructions are not truncated by `maxWritesPerTurn` (that budget remains for the LLM-extraction/candidate path); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; the rule layer no longer produces implicit candidates; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; a different body under the same title creates a new entry instead of overwriting; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
 
 ### Session compaction archiving
 

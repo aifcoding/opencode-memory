@@ -58,9 +58,9 @@ $HOME/.config/opencode
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |---|---|---:|---|
-| `autoCapture.enabled` | `boolean` | `true` | 是否启用自动采集（按准入矩阵写入或落候选） |
-| `autoCapture.mode` | `'off' \| 'shadow' \| 'on'` | `'on'` | `on` 按矩阵直写 + 落候选；`shadow` 只计算不写任何表，仍推进会话游标；`off` 等价于 `enabled=false` |
-| `autoCapture.maxWritesPerTurn` | `number` | `3` | 单条消息最多写入条数，直写与候选合计（0..10，超大值按 3 截断） |
+| `autoCapture.enabled` | `boolean` | `true` | 是否执行显式记忆指令（记住/行为指令/明确纠正） |
+| `autoCapture.mode` | `'off' \| 'shadow' \| 'on'` | `'on'` | `on` 显式指令立即写入/更新；`shadow` 只诊断不写表（启用时须提示未保存）；`off` 等价于 `enabled=false` |
+| `autoCapture.maxWritesPerTurn` | `number` | `3` | LLM 提取/候选路径的单轮写入额度（0..10）；显式记忆指令不受此额度截断 |
 | `capture.enabled` | `boolean` | `false` | 是否启用 LLM 辅助提取（压缩后 / 手动 `memory_capture`） |
 | `capture.onCompaction` | `boolean` | `true` | 压缩后自动触发提取 |
 | `capture.model` | `object` | 未配置 | `{provider, model, variant?}`；未配置用宿主默认模型；配置后不可用即失败，不回退 |
@@ -75,11 +75,15 @@ $HOME/.config/opencode
 
 行为与限制：
 
-- 准入矩阵（v1，规则编号见 `openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md`）：E1 明确保存、S1 完整配置绑定、D1 明确选型 → 直写 `memories`（`origin=agent`、`trust=low`）；E2/S2/D2/C2 → 写 `memory_candidates` 待审批；C1 仅在唯一匹配 `agent/low` 且旧值相符时 CAS 更新；Q 落低价值候选，N 丢弃。
+- 记忆指令执行器（见 `openspec/changes/2026-11-26-explicit-memory-instructions/`）：
+  - 显式保存（`记住/记一下/保存下来 + 正文`）→ 立即直写，整条消息一条记忆；正文原样保留（代码块/缩进/换行），不按问句/长度/字数做质量筛选；
+  - 完整行为指令（`以后/下次/统一/禁止/默认/一律/全部`，可带「本项目」）→ 立即直写为偏好；
+  - 明确纠正（带 `更正/改成/记住` 等意图 + 唯一目标 + 旧值相符）→ CAS 更新为新值，否则丢弃并反馈；普通聊天里的纠正不会改写记忆；
+  - 隐式内容（随口配置、日志、决策句、问答对）→ 规则层零写入，交给 LLM 提取。
 - 未审批候选不在 `memories` 表，默认召回与 `memory_recall` 都不会返回；审批沿用现有候选审核流程。
-- 直写与更新都不会改写人工记忆或高信任记忆；非 C1 路径一律不得按标题覆盖，同键或同标题出现不同内容时只落候选（值比较按边界匹配，`1808` 不命中 `18080`）。
-- 代码围栏与引用块内容不参与判定；C1 需给出白名单字段与合法新值；自动条目标题为单个宽泛词时不参与自动召回注入。
-- 限流：单条消息最多 3 条直写，超出转候选；同一 scope 每日最多 20 条**新增**候选（按当天创建数计，批准不恢复额度）；14 天候选过期尚未实现。
+- 直写与更新都不会改写人工记忆或高信任记忆；非 C1 路径一律不得按标题覆盖，同标题出现不同内容时另建唯一标题条目（不覆盖、不转候选）。
+- 代码围栏与引用块内容参与显式保存正文（原样入库）；C1 需给出白名单字段与合法新值；自动条目标题为单个宽泛词时不参与自动召回注入。
+- 显式指令不受 `maxWritesPerTurn` 截断；同一 scope 每日最多 20 条**新增**候选（按当天创建数计，批准不恢复额度）；14 天候选过期尚未实现。
 - 凭据：命中片段脱敏为 `[REDACTED]` 后继续；整条仅凭据时放弃；`password=环境变量` 等占位符不脱敏。
 - 问答对（qa）不再直接丢弃，改为落低价值候选（长度 <2 字符仍丢弃）。
 - 凭据过滤只拒绝命中现有规则的输入（密码、token、私钥、含 userinfo 的连接串），不保证识别所有敏感信息；不要输入或保存凭据。

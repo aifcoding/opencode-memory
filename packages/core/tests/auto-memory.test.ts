@@ -49,12 +49,12 @@ afterEach(async () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('E1 explicit save of a plain fact becomes one candidate and no direct memory', async () => {
+test('E1 explicit save of a plain fact is written directly', async () => {
   const text = '记住，测试库在 10.0.0.5:3306';
   const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ E2: 1 });
-  expect(routed.direct).toHaveLength(0);
-  expect(routed.pending).toHaveLength(1);
+  expect(routed.rules).toEqual({ E1: 1 });
+  expect(routed.direct).toHaveLength(1);
+  expect(routed.pending).toHaveLength(0);
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text, origin: 'human' }, scope });
@@ -62,14 +62,14 @@ test('E1 explicit save of a plain fact becomes one candidate and no direct memor
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
 
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.content).toContain('10.0.0.5:3306');
-  expect(candidates[0]!.tags).toContain('auto:explicit');
-  expect(candidates[0]!.tags).toContain('auto:rule:E2');
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('10.0.0.5:3306');
+  expect(list[0]!.tags).toContain('auto:explicit');
+  expect(list[0]!.tags).toContain('auto:rule:E1');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('E1 negatives are rejected by both stores', async () => {
@@ -92,44 +92,28 @@ test('E1 negatives are rejected by both stores', async () => {
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('splits structured units and keeps an explicit save whole', async () => {
+test('keeps a multi-fact explicit save as one direct memory', async () => {
   const explicit = '记住 test db 10.0.0.5:3306。生产 db 10.0.1.5:3306。';
-  const kept = routeText({ current: { text: explicit, origin: 'human' }, scope });
-  expect(kept.rules).toEqual({ E2: 1 });
-  expect(kept.direct).toHaveLength(0);
-  expect(kept.pending).toHaveLength(1);
-  expect(kept.pending[0]!.candidate?.content).toContain('10.0.0.5:3306');
-  expect(kept.pending[0]!.candidate?.content).toContain('10.0.1.5:3306');
+  const routed = routeText({ current: { text: explicit, origin: 'human' }, scope });
+  expect(routed.rules).toEqual({ E1: 1 });
+  expect(routed.direct).toHaveLength(1);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.direct[0]!.candidate?.content).toContain('10.0.0.5:3306');
+  expect(routed.direct[0]!.candidate?.content).toContain('10.0.1.5:3306');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const explicitScope = { scope: 'project' as const, scopeKey: 'iam-explicit' };
-  const explicitResult = await service.capture({
-    current: { text: explicit, origin: 'human' },
-    scope: explicitScope,
-  });
+  const result = await service.capture({ current: { text: explicit, origin: 'human' }, scope });
   expect({
-    written: explicitResult.written,
-    pendingCreated: explicitResult.pendingCreated,
-  }).toEqual({ written: 0, pendingCreated: 1 });
-  expect(await manager.listMemories({ scope: explicitScope })).toHaveLength(0);
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
 
-  const text = 'staging.redis.endpoint=redis.internal:6379。staging.redis.port=6379。';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ S1: 2 });
-  expect(routed.direct).toHaveLength(2);
-  expect(routed.pending).toHaveLength(0);
-
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 2,
-    pendingCreated: 0,
-  });
   const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(2);
-  expect(list.map((entry) => entry.title).sort()).toEqual([
-    'staging.redis.endpoint',
-    'staging.redis.port',
-  ]);
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('10.0.0.5:3306');
+  expect(list[0]!.content).toContain('10.0.1.5:3306');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('rejects credentials before writing', () => {
@@ -141,23 +125,23 @@ test('rejects credentials before writing', () => {
   ).toHaveLength(0);
 });
 
-test('candidates carry agent origin, low trust and rule tags', async () => {
+test('direct writes carry agent origin, low trust and rule tags', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: '记住，测试库在 10.0.0.5:3306', origin: 'human' }, scope });
-  expect(result.pendingCreated).toBe(1);
+  expect(result.written).toBe(1);
 
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  const candidate = candidates[0]!;
-  expect(candidate.origin).toBe('agent');
-  expect(candidate.trust).toBe('low');
-  expect(candidate.type).toBe('fact');
-  expect(candidate.tags).toEqual(expect.arrayContaining(['auto', 'auto:explicit', 'auto:rule:E2']));
-  expect(candidate.content).toContain('状态：未确认（自动采集，待核实）');
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  const entry = list[0]!;
+  expect(entry.origin).toBe('agent');
+  expect(entry.trust).toBe('low');
+  expect(entry.type).toBe('fact');
+  expect(entry.tags).toEqual(expect.arrayContaining(['auto', 'auto:explicit', 'auto:rule:E1']));
+  expect(entry.content).toContain('10.0.0.5:3306');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('same agent/low title with new content becomes a candidate instead of overwriting', async () => {
+test('same title with new explicit content is kept as a new memory, never a candidate', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const first = await service.capture({ current: { text: '记住：test.db.port=3306', origin: 'human' }, scope });
   expect({ written: first.written, updated: first.updated }).toEqual({ written: 1, updated: 0 });
@@ -165,19 +149,22 @@ test('same agent/low title with new content becomes a candidate instead of overw
   expect(original).toBeDefined();
   const before = snapshotOf(original!);
 
-  const second = await service.capture({ current: { text: 'test.db.port=3307', origin: 'human' }, scope });
+  const second = await service.capture({ current: { text: '记住：test.db.port=3307', origin: 'human' }, scope });
   expect({
     written: second.written,
     updated: second.updated,
     pendingCreated: second.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
 
   const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(1);
-  expect(snapshotOf(list[0]!)).toEqual(before);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.content).toContain('3307');
+  expect(list).toHaveLength(2);
+  expect(snapshotOf(await readFound(original!.id))).toEqual(before);
+  expect(list.map((entry) => entry.title)).toEqual(
+    expect.arrayContaining(['test.db.port', 'test.db.port 2']),
+  );
+  const added = list.find((entry) => entry.title === 'test.db.port 2')!;
+  expect(added.content).toContain('3307');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('never overwrites a user-authored memory', async () => {
@@ -195,22 +182,22 @@ test('never overwrites a user-authored memory', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
   expect(snapshotOf(await readFound(manual.id))).toEqual(snapshotOf(manual));
-  expect(await manager.listMemories({ scope })).toHaveLength(1);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.title).toBe('10.0.0.5:3306');
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(2);
+  expect(list.filter((entry) => entry.origin === 'user')).toHaveLength(1);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('C1 updates the unique matching low-trust target in place', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  await service.capture({ current: { text: 'staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
+  await service.capture({ current: { text: '记住：staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
   const [target] = await manager.listMemories({ scope });
   expect(target).toBeDefined();
   expect(target!.revision).toBe(1);
 
-  const correction = 'staging.redis.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
+  const correction = '更正：staging.redis.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
   const routed = routeText({ current: { text: correction, origin: 'human' }, scope, autoEntries: [target!] });
   expect(routed.rules).toEqual({ C1: 1 });
   expect(routed.direct[0]!.targetId).toBe(target!.id);
@@ -232,7 +219,7 @@ test('C1 updates the unique matching low-trust target in place', async () => {
 
 test('refreshes summary when updating', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  await service.capture({ current: { text: 'test.port=18080', origin: 'human' }, scope });
+  await service.capture({ current: { text: '记住：test.port=18080', origin: 'human' }, scope });
   const [created] = await manager.listMemories({ scope });
   expect(created).toBeDefined();
   expect(created!.revision).toBe(1);
@@ -257,7 +244,8 @@ test('shadow mode computes routes but writes nothing to either store', async () 
     mode: 'shadow',
   });
   const result = await service.capture({ current: { text: '记住，测试库在 10.0.0.5:3306', origin: 'human' }, scope });
-  expect(result.pending).toHaveLength(1);
+  expect(result.direct).toHaveLength(1);
+  expect(result.pending).toHaveLength(0);
   expect({
     written: result.written,
     updated: result.updated,
@@ -288,7 +276,7 @@ test('off config neither computes routes nor writes', async () => {
 
 test('recalls relevant memory and excludes given ids', async () => {
   const capture = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  await capture.capture({ current: { text: 'staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
+  await capture.capture({ current: { text: '记住：staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
 
   const recall = new AutoRecallService(manager);
   const first = await recall.recall({
@@ -395,45 +383,22 @@ test('english word boundary prevents substring hits', async () => {
   expect(result.items).toHaveLength(0);
 });
 
-test('same title inside one message does not duplicate', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({
-    current: { text: 'probe-x.endpoint=http://127.0.0.1:18090。probe-x.endpoint=http://127.0.0.1:18091。', origin: 'human' },
-    scope,
-  });
-  expect({
-    written: result.written,
-    updated: result.updated,
-    pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 1, updated: 0, pendingCreated: 1 });
-
-  const list = await manager.listMemories({ scope });
-  expect(list.filter((entry) => entry.title.includes('probe-x')).length).toBe(1);
-  expect(list[0]!.content).toContain('18090');
-  expect(list[0]!.content).not.toContain('18091');
-  expect(list[0]!.revision).toBe(1);
-
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.content).toContain('18091');
-});
-
-test('credential spans are redacted and the rest of the message is kept as a candidate', async () => {
+test('credential spans are redacted and the rest is written directly', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({
     current: { text: '记住 probe-secret-0 地址 http://127.0.0.1:18100，password=abc123', origin: 'human' },
     scope,
   });
   expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 0,
-    pendingCreated: 1,
+    written: 1,
+    pendingCreated: 0,
   });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  const [candidate] = await manager.listMemoryCandidates({ scope });
-  expect(candidate).toBeDefined();
-  expect(candidate!.content).not.toContain('abc123');
-  expect(candidate!.content).toContain('[REDACTED]');
-  expect(candidate!.content).toContain('18100');
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).not.toContain('abc123');
+  expect(list[0]!.content).toContain('[REDACTED]');
+  expect(list[0]!.content).toContain('18100');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('never overwrites user or high-trust memories that share the direct-write title', async () => {
@@ -476,14 +441,14 @@ test('never overwrites user or high-trust memories that share the direct-write t
   const autoSnapshot = snapshotOf(autoLowBefore[0]!);
 
   const second = await service.capture({
-    current: { text: 'db-x.endpoint=http://127.0.0.1:18093', origin: 'human' },
+    current: { text: '记住：db-x.endpoint=http://127.0.0.1:18093', origin: 'human' },
     scope,
   });
   expect({
     written: second.written,
     updated: second.updated,
     pendingCreated: second.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
 
   const presetAfter = [
     snapshotOf(await readFound(userHigh.id)),
@@ -497,12 +462,15 @@ test('never overwrites user or high-trust memories that share the direct-write t
   );
   expect(autoLow).toHaveLength(1);
   expect(snapshotOf(autoLow[0]!)).toEqual(autoSnapshot);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.content).toContain('18093');
+  const added = (await manager.listMemories({ scope })).find(
+    (entry) => entry.title === `${title} 2`,
+  );
+  expect(added).toBeDefined();
+  expect(added!.content).toContain('18093');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('C1 never updates a user or high-trust target', async () => {
+test('C1 never updates a user or high-trust target and drops the correction', async () => {
   const manual = await manager.storeMemory({
     title: 'billing.gateway.endpoint',
     content: '人工记录 6379',
@@ -511,10 +479,12 @@ test('C1 never updates a user or high-trust target', async () => {
     origin: 'user',
     trust: 'high',
   });
-  const correction = 'billing.gateway.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
+  const correction = '更正：billing.gateway.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
   const routed = routeText({ current: { text: correction, origin: 'human' }, scope, autoEntries: [manual] });
-  expect(routed.rules).toEqual({ C2: 1 });
-  expect(routed.pending[0]!.reason).toBe('target not auto low-trust');
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.dropped[0]!.reason).toBe('target not auto low-trust');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: correction, origin: 'human' }, scope });
@@ -522,10 +492,10 @@ test('C1 never updates a user or high-trust target', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
   expect(snapshotOf(await readFound(manual.id))).toEqual(snapshotOf(manual));
   expect(await manager.listMemories({ scope })).toHaveLength(1);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 
   const vague = routeText({ current: { text: '改成新版', origin: 'human' }, scope });
   expect({ direct: vague.direct.length, pending: vague.pending.length }).toEqual({
@@ -561,11 +531,13 @@ test('C2 incomplete corrections are dropped', async () => {
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('C2 creates a candidate when no target matches', async () => {
-  const correction = 'staging.payments.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
+test('C2 corrections without a target are dropped', async () => {
+  const correction = '更正：staging.payments.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
   const routed = routeText({ current: { text: correction, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ C2: 1 });
-  expect(routed.pending[0]!.reason).toBe('no target');
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.dropped[0]!.reason).toBe('no target');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: correction, origin: 'human' }, scope });
@@ -573,12 +545,9 @@ test('C2 creates a candidate when no target matches', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
   expect(await manager.listMemories({ scope })).toHaveLength(0);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.title).toBe('staging.payments.endpoint');
-  expect(candidates[0]!.status).toBe('pending');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('C2 does not overwrite when the old value does not match', async () => {
@@ -590,10 +559,12 @@ test('C2 does not overwrite when the old value does not match', async () => {
     origin: 'agent',
     trust: 'low',
   });
-  const correction = 'staging.redis.endpoint 不是 redis.internal:9999，是 redis.internal:6380';
+  const correction = '更正：staging.redis.endpoint 不是 redis.internal:9999，是 redis.internal:6380';
   const routed = routeText({ current: { text: correction, origin: 'human' }, scope, autoEntries: [target] });
-  expect(routed.rules).toEqual({ C2: 1 });
-  expect(routed.pending[0]!.reason).toBe('old value mismatch');
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.dropped[0]!.reason).toBe('old value mismatch');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: correction, origin: 'human' }, scope });
@@ -601,10 +572,10 @@ test('C2 does not overwrite when the old value does not match', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
   expect(snapshotOf(await readFound(target.id))).toEqual(snapshotOf(target));
   expect(await manager.listMemories({ scope })).toHaveLength(1);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('C2 refuses to choose between multiple matching targets', async () => {
@@ -624,10 +595,12 @@ test('C2 refuses to choose between multiple matching targets', async () => {
     origin: 'agent',
     trust: 'low',
   });
-  const correction = 'staging.redis.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
+  const correction = '更正：staging.redis.endpoint 不是 redis.internal:6379，是 redis.internal:6380';
   const routed = routeText({ current: { text: correction, origin: 'human' }, scope, autoEntries: [first, second] });
-  expect(routed.rules).toEqual({ C2: 1 });
-  expect(routed.pending[0]!.reason).toBe('multiple targets');
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.dropped[0]!.reason).toBe('multiple targets');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: correction, origin: 'human' }, scope });
@@ -635,102 +608,13 @@ test('C2 refuses to choose between multiple matching targets', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
   const list = await manager.listMemories({ scope });
   expect(list).toHaveLength(2);
   const snapshots = new Map(list.map((entry) => [entry.id, snapshotOf(entry)]));
   expect(snapshots.get(first.id)).toEqual(snapshotOf(first));
   expect(snapshots.get(second.id)).toEqual(snapshotOf(second));
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
-});
-
-test('E2 weak explicit wording without a save instruction is dropped', async () => {
-  const text = '配置是 redis.internal:6379';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ N: 1 });
-  expect(routed.direct).toHaveLength(0);
-  expect(routed.pending).toHaveLength(0);
-
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({
-    written: result.written,
-    updated: result.updated,
-    pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('E2 negatives are dropped from both stores', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  for (const text of ['配置是什么？', '以后都这样']) {
-    const routed = routeText({ current: { text, origin: 'human' }, scope });
-    expect({ text, e2: routed.rules.E2, direct: routed.direct.length }).toEqual({
-      text,
-      e2: undefined,
-      direct: 0,
-    });
-    expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 0 });
-    const result = await service.capture({ current: { text, origin: 'human' }, scope });
-    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-      text,
-      written: 0,
-      pendingCreated: 0,
-    });
-  }
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('S1 complete bindings are written directly', async () => {
-  const text = 'staging.redis.endpoint=redis.internal:6379';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ S1: 1 });
-  expect(routed.direct).toHaveLength(1);
-  expect(routed.pending).toHaveLength(0);
-
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 1,
-    pendingCreated: 0,
-  });
-
-  const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(1);
-  expect(list[0]!.title).toBe('staging.redis.endpoint');
-  expect(list[0]!.content).toContain('结构化值：staging.redis.endpoint=redis.internal:6379');
-  expect(list[0]!.tags).toEqual(
-    expect.arrayContaining(['auto', 'auto:structured', 'auto:rule:S1']),
-  );
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('S1 negatives never write direct memories', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const cases = [
-    '看看 https://example.org 怎么打不开',
-    '如果升级到 1.2.3 会怎样？',
-    'app.port=65536',
-    '示例地址是 https://example.org',
-  ];
-  for (const text of cases) {
-    const routed = routeText({ current: { text, origin: 'human' }, scope });
-    expect({ text, direct: routed.direct.length }).toEqual({ text, direct: 0 });
-    const result = await service.capture({ current: { text, origin: 'human' }, scope });
-    expect({ text, written: result.written, updated: result.updated }).toEqual({
-      text,
-      written: 0,
-      updated: 0,
-    });
-  }
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-
-  expect(routeText({ current: { text: cases[0]!, origin: 'human' }, scope }).rules).toEqual({ N: 1 });
-  expect(routeText({ current: { text: cases[1]!, origin: 'human' }, scope }).rules).toEqual({ N: 1 });
-  expect(routeText({ current: { text: cases[2]!, origin: 'human' }, scope }).rules).toEqual({ S2: 1 });
-  expect(routeText({ current: { text: cases[3]!, origin: 'human' }, scope }).rules).toEqual({ N: 1 });
 });
 
 test('S2 incomplete structured facts are dropped without a candidate', async () => {
@@ -772,160 +656,10 @@ test('S2 bare values are dropped from both stores', async () => {
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('D1 explicit selection is written as a decision', async () => {
-  const text = '本项目决定采用 SQLite';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ D1: 1 });
-  expect(routed.direct).toHaveLength(1);
-
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 1,
-    pendingCreated: 0,
-  });
-
-  const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(1);
-  expect(list[0]!.type).toBe('decision');
-  expect(list[0]!.tags).toEqual(
-    expect.arrayContaining(['auto', 'auto:decision', 'auto:rule:D1']),
-  );
-  expect(list[0]!.content).toContain('未确认');
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('D1 questions and conditionals are dropped', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  for (const text of ['是否决定采用 SQLite？', '如果本项目决定采用 SQLite，就用它']) {
-    const routed = routeText({ current: { text, origin: 'human' }, scope });
-    expect({ text, d1: routed.rules.D1, direct: routed.direct.length }).toEqual({
-      text,
-      d1: undefined,
-      direct: 0,
-    });
-    const result = await service.capture({ current: { text, origin: 'human' }, scope });
-    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-      text,
-      written: 0,
-      pendingCreated: 0,
-    });
-  }
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('D2 other decisions become candidates', async () => {
-  const text = '本项目否决 SQLite，原因是并发写入限制';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ D2: 1 });
-  expect(routed.pending).toHaveLength(1);
-
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 0,
-    pendingCreated: 1,
-  });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.type).toBe('decision');
-  expect(candidates[0]!.tags).toEqual(
-    expect.arrayContaining(['auto', 'auto:decision', 'auto:rule:D2']),
-  );
-});
-
-test('D2 negatives are dropped', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  for (const text of ['这次不用跑全量测试', '因为太慢了']) {
-    const routed = routeText({ current: { text, origin: 'human' }, scope });
-    expect({ text, direct: routed.direct.length, pending: routed.pending.length }).toEqual({
-      text,
-      direct: 0,
-      pending: 0,
-    });
-    const result = await service.capture({ current: { text, origin: 'human' }, scope });
-    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-      text,
-      written: 0,
-      pendingCreated: 0,
-    });
-  }
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('same key with a different value becomes a candidate instead of overwriting', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const first = await service.capture({ current: { text: 'staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
-  expect({ written: first.written, updated: first.updated }).toEqual({ written: 1, updated: 0 });
-  const [original] = await manager.listMemories({ scope });
-  expect(original).toBeDefined();
-  const before = snapshotOf(original!);
-
-  const second = await service.capture({
-    current: { text: 'staging.redis.endpoint=redis.internal:6380', origin: 'human' },
-    scope,
-  });
-  expect({
-    written: second.written,
-    updated: second.updated,
-    pendingCreated: second.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
-  expect(second.rules).toEqual({ S2: 1 });
-
-  expect(snapshotOf(await readFound(original!.id))).toEqual(before);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.title).toBe('staging.redis.endpoint');
-  expect(candidates[0]!.content).toContain('redis.internal:6380');
-});
-
-test('a trailing conversational sentence does not inherit the config signal', async () => {
-  const text = 'staging.redis.endpoint=redis.internal:6379。你再看看';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ S1: 1, N: 1 });
-  expect(routed.direct).toHaveLength(1);
-
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 1,
-    pendingCreated: 0,
-  });
-
-  const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(1);
-  expect(list[0]!.content).toContain('redis.internal:6379');
-  expect(list[0]!.content).not.toContain('你再看看');
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
-
-test('a config binding survives alongside a qa-style reply', async () => {
-  const text = 'staging.redis.endpoint=redis.internal:6379。深蓝色';
-  const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ S1: 1, N: 1 });
-  expect(routed.direct).toHaveLength(1);
-
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 1,
-    pendingCreated: 0,
-  });
-
-  const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(1);
-  expect(list[0]!.title).toBe('staging.redis.endpoint');
-  expect(list[0]!.content).not.toContain('深蓝色');
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
-});
 
 test('E1 wrapping a correction does not bypass C1', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  await service.capture({ current: { text: 'staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
+  await service.capture({ current: { text: '记住：staging.redis.endpoint=redis.internal:6379', origin: 'human' }, scope });
   const [target] = await manager.listMemories({ scope });
   expect(target).toBeDefined();
 
@@ -947,12 +681,12 @@ test('E1 wrapping a correction does not bypass C1', async () => {
   expect(list[0]!.revision).toBe(2);
 });
 
-test('E1 wrapping an unsafe correction falls back to a candidate', async () => {
+test('E1 wrapping a correction without a determinate target is still saved as text', async () => {
   const text = '记住：staging.payments.endpoint 不是 6379，是 6380';
   const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ C2: 1 });
-  expect(routed.direct).toHaveLength(0);
-  expect(routed.pending).toHaveLength(1);
+  expect(routed.rules).toEqual({ E1: 1 });
+  expect(routed.direct).toHaveLength(1);
+  expect(routed.pending).toHaveLength(0);
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text, origin: 'human' }, scope });
@@ -960,17 +694,44 @@ test('E1 wrapping an unsafe correction falls back to a candidate', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('6380');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('a pending candidate stays out of memories and recall until approved', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const text = '记住，测试库在 redis.internal:6379';
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect(result.pendingCreated).toBe(1);
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  const seed = await service.capture({
+    current: { text: '记住：redis.endpoint=redis.internal:6379', origin: 'human' },
+    scope,
+  });
+  expect(seed.written).toBe(1);
+  expect(await manager.listMemories({ scope })).toHaveLength(1);
+
+  const started = await manager.beginCapture({
+    contextKey: 'ctx-redis',
+    sourceId: 'msg-redis',
+    trigger: 'manual',
+    extractorVersion: 'capture-v1',
+    scope,
+  });
+  if (started.status !== 'started') throw new Error('capture did not start');
+  const completed = await manager.completeCapture({
+    captureKey: started.captureKey,
+    leaseToken: started.leaseToken,
+    candidates: [
+      {
+        title: 'redis.endpoint',
+        content: '结论：redis.endpoint=redis.internal:6380',
+        type: 'fact',
+        suggestedDomain: 'code',
+      },
+    ],
+  });
+  expect(completed.candidateCount).toBe(1);
+  expect(await manager.listMemories({ scope })).toHaveLength(1);
 
   const [candidate] = await manager.listMemoryCandidates({ scope });
   expect(candidate).toBeDefined();
@@ -982,7 +743,9 @@ test('a pending candidate stays out of memories and recall until approved', asyn
     maxItems: 3,
     maxCharacters: 300,
   });
-  expect(before.items).toHaveLength(0);
+  expect(before.items).toHaveLength(1);
+  expect(before.text).toContain('6379');
+  expect(before.text).not.toContain('6380');
 
   const reviewed = await manager.reviewMemoryCandidate({
     id: candidate!.id,
@@ -998,7 +761,8 @@ test('a pending candidate stays out of memories and recall until approved', asyn
     maxItems: 3,
     maxCharacters: 300,
   });
-  expect(after.items).toHaveLength(1);
+  expect(after.items).toHaveLength(2);
+  expect(after.text).toContain('6380');
 });
 
 test('CAS conflict leaves content untouched', async () => {
@@ -1047,11 +811,11 @@ test('strips every synthetic block tag and keeps only outside content', async ()
     current: { text: mixed, origin: 'human' },
     scope,
   });
-  expect(routed.rules).toEqual({ E2: 1 });
-  expect(routed.direct).toHaveLength(0);
-  expect(routed.pending).toHaveLength(1);
-  expect(routed.pending[0]!.candidate?.content).toContain('18131');
-  expect(routed.pending[0]!.candidate?.content).not.toContain('18130');
+  expect(routed.rules).toEqual({ E1: 1 });
+  expect(routed.direct).toHaveLength(1);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.direct[0]!.candidate?.content).toContain('18131');
+  expect(routed.direct[0]!.candidate?.content).not.toContain('18130');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: mixed, origin: 'human' }, scope });
@@ -1059,84 +823,12 @@ test('strips every synthetic block tag and keeps only outside content', async ()
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  const candidates = await manager.listMemoryCandidates({ scope });
-  expect(candidates).toHaveLength(1);
-  expect(candidates[0]!.content).toContain('18131');
-  expect(candidates[0]!.content).not.toContain('18130');
-});
-
-test('routes each rule with its signal, tags, type and unconfirmed content', () => {
-  const cases = [
-    {
-      text: '记住：以后都用 pnpm',
-      bucket: 'direct',
-      rule: 'E1',
-      signal: 'explicit',
-      type: 'preference',
-    },
-    {
-      text: 'staging.redis.endpoint=redis.internal:6379',
-      bucket: 'direct',
-      rule: 'S1',
-      signal: 'structured',
-      type: 'fact',
-    },
-    {
-      text: '本项目决定采用 SQLite',
-      bucket: 'direct',
-      rule: 'D1',
-      signal: 'decision',
-      type: 'decision',
-    },
-    {
-      text: '记住 test db 10.0.0.5:3306',
-      bucket: 'pending',
-      rule: 'E2',
-      signal: 'explicit',
-      type: 'fact',
-    },
-    {
-      text: 'app.port=65536',
-      bucket: 'pending',
-      rule: 'S2',
-      signal: 'structured',
-      type: 'fact',
-    },
-    {
-      text: '本项目否决 SQLite，原因是并发写入限制',
-      bucket: 'pending',
-      rule: 'D2',
-      signal: 'decision',
-      type: 'decision',
-    },
-    {
-      text: 'staging.payments.endpoint 不是 6379，是 6380',
-      bucket: 'pending',
-      rule: 'C2',
-      signal: 'correction',
-      type: 'fact',
-    },
-  ] as const;
-
-  for (const item of cases) {
-    const routed = routeText({ current: { text: item.text, origin: 'human' }, scope });
-    const units = routed[item.bucket];
-    expect({ text: item.text, units: units.length }).toEqual({ text: item.text, units: 1 });
-    const unit = units[0]!;
-    expect({ text: item.text, rule: unit.rule }).toEqual({ text: item.text, rule: item.rule });
-    const candidate = unit.candidate!;
-    expect({ text: item.text, signal: candidate.signal }).toEqual({
-      text: item.text,
-      signal: item.signal,
-    });
-    expect({ text: item.text, type: candidate.type }).toEqual({ text: item.text, type: item.type });
-    expect(candidate.tags).toEqual(
-      expect.arrayContaining(['auto', `auto:${item.signal}`, `auto:rule:${item.rule}`]),
-    );
-    expect(candidate.content).toContain('未确认');
-  }
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('18131');
+  expect(list[0]!.content).not.toContain('18130');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('auto recall respects an exact rendered character budget', async () => {
@@ -1268,7 +960,7 @@ test('deictic_save_does_not_cross_the_injection_boundary', async () => {
   expect(routed.rules).toEqual({ N: 1 });
   expect(routed.direct).toHaveLength(0);
   expect(routed.pending).toHaveLength(0);
-  expect(routed.dropped[0]!.reason).toBe('deictic save without explicit object');
+  expect(routed.dropped[0]!.reason).toBe('deictic save needs clarification');
 
   const result = await service.capture({
     current: { text, origin: 'human' },
@@ -1314,7 +1006,7 @@ test('deictic_without_context_is_dropped', async () => {
     expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 0 });
     expect({ text, reason: routed.dropped[0]!.reason }).toEqual({
       text,
-      reason: 'deictic save without explicit object',
+      reason: 'deictic save needs clarification',
     });
 
     const result = await service.capture({ current: { text, origin: 'human' }, scope });
@@ -1374,7 +1066,7 @@ test('deictic save with overlong context is still dropped', async () => {
 
 test('chinese credential-only saves are dropped', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const texts = ['记住：密码是 abc123', '记住：口令为 xyz', '记住：api密钥是 k-1'];
+  const texts = ['记住：密码是 abc123', '记住：口令为 xyz', '记住：密钥是 k-1'];
 
   for (const text of texts) {
     expect({ text, credential: hasCredential(text) }).toEqual({ text, credential: true });
@@ -1395,13 +1087,11 @@ test('chinese credential-only saves are dropped', async () => {
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('credential_policy_without_value_is_allowed', async () => {
+test('credential_policy_without_value_is_written_directly', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const cases = [
-    // 不构成凭据赋值，按普通完整事实落候选。
-    { text: '记住：密码走环境变量', rule: 'E2', written: 0, pendingCreated: 1 },
-    // 偏好措辞（不要）且长度足够，按 E1 直写偏好。
-    { text: '记住：不要把密码写进日志', rule: 'E1', written: 1, pendingCreated: 0 },
+    { text: '记住：密码走环境变量', type: 'fact' },
+    { text: '记住：不要把密码写进日志', type: 'preference' },
   ] as const;
 
   for (const item of cases) {
@@ -1412,7 +1102,7 @@ test('credential_policy_without_value_is_allowed', async () => {
     const routed = routeText({ current: { text: item.text, origin: 'human' }, scope });
     expect({ text: item.text, rules: routed.rules }).toEqual({
       text: item.text,
-      rules: { [item.rule]: 1 },
+      rules: { E1: 1 },
     });
     const result = await service.capture({ current: { text: item.text, origin: 'human' }, scope });
     expect({
@@ -1422,13 +1112,15 @@ test('credential_policy_without_value_is_allowed', async () => {
       pendingCreated: result.pendingCreated,
     }).toEqual({
       text: item.text,
-      written: item.written,
+      written: 1,
       updated: 0,
-      pendingCreated: item.pendingCreated,
+      pendingCreated: 0,
     });
   }
-  expect(await manager.listMemories({ scope })).toHaveLength(1);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(2);
+  expect(list.map((entry) => entry.type).sort()).toEqual(['fact', 'preference']);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('deictic save never pulls a credential across the injection boundary', async () => {
@@ -1442,7 +1134,7 @@ test('deictic save never pulls a credential across the injection boundary', asyn
     scope,
   });
   expect(routed.rules).toEqual({ N: 1 });
-  expect(routed.dropped[0]!.reason).toBe('deictic save without explicit object');
+  expect(routed.dropped[0]!.reason).toBe('deictic save needs clarification');
 
   const result = await service.capture({
     current: { text, origin: 'human' },
@@ -1486,9 +1178,32 @@ test('same deictic text is dropped regardless of different contexts', async () =
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('E1 negated saves are dropped from both stores', async () => {
+test('corrections require an explicit memory intent', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  for (const text of ['记住：不要保存这个', '记住：不要记这个']) {
+  const target = await service.capture({
+    current: { text: '记住：test.port=18080', origin: 'human' },
+    scope,
+  });
+  expect(target.written).toBe(1);
+  const [before] = await manager.listMemories({ scope });
+
+  // 普通聊天里的纠正（无记忆意图）不得改写既有记忆。
+  const chat = '我觉得 test.port 不是 18080，是 18081';
+  const routed = routeText({ current: { text: chat, origin: 'human' }, scope });
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  const result = await service.capture({ current: { text: chat, origin: 'human' }, scope });
+  expect({ written: result.written, updated: result.updated, pendingCreated: result.pendingCreated }).toEqual({
+    written: 0,
+    updated: 0,
+    pendingCreated: 0,
+  });
+  expect(snapshotOf(await readFound(before!.id))).toEqual(snapshotOf(before!));
+});
+
+test('E1 outer negation is dropped; inner prohibition is saved', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['不要记住这个端口', '别保存这条']) {
     const routed = routeText({ current: { text, origin: 'human' }, scope });
     expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
     expect({ text, direct: routed.direct.length, pending: routed.pending.length }).toEqual({
@@ -1503,19 +1218,30 @@ test('E1 negated saves are dropped from both stores', async () => {
       pendingCreated: 0,
     });
   }
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
+
+  // 「记住：不要保存 X」是保存一条禁止性规则，不是取消保存。
+  for (const text of ['记住：不要保存这个', '记住：不要记这个']) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
+      text,
+      written: 1,
+      pendingCreated: 0,
+    });
+  }
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(2);
+  expect(list.every((entry) => entry.type === 'preference')).toBe(true);
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('E1 multi-fact content becomes a candidate', async () => {
+test('E1 multi-fact content is written as one direct memory', async () => {
   const text = '记住 test.port=18080。redis.port=6379。';
   const routed = routeText({ current: { text, origin: 'human' }, scope });
-  expect(routed.rules).toEqual({ E2: 1 });
-  expect(routed.direct).toHaveLength(0);
-  expect(routed.pending).toHaveLength(1);
-  expect(routed.pending[0]!.reason).toBe('multiple facts in one save');
-  expect(routed.pending[0]!.candidate?.content).toContain('test.port=18080');
-  expect(routed.pending[0]!.candidate?.content).toContain('redis.port=6379');
+  expect(routed.rules).toEqual({ E1: 1 });
+  expect(routed.direct).toHaveLength(1);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.direct[0]!.candidate?.content).toContain('test.port=18080');
+  expect(routed.direct[0]!.candidate?.content).toContain('redis.port=6379');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text, origin: 'human' }, scope });
@@ -1523,9 +1249,12 @@ test('E1 multi-fact content becomes a candidate', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('test.port=18080');
+  expect(list[0]!.content).toContain('redis.port=6379');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('E1 preference is written directly as a preference', async () => {
@@ -1599,10 +1328,12 @@ test('C2 treats a partial value as an old-value mismatch', async () => {
     origin: 'agent',
     trust: 'low',
   });
-  const correction = 'test.port 不是 1808，是 18081';
+  const correction = '更正：test.port 不是 1808，是 18081';
   const routed = routeText({ current: { text: correction, origin: 'human' }, scope, autoEntries: [target] });
-  expect(routed.rules).toEqual({ C2: 1 });
-  expect(routed.pending[0]!.reason).toBe('old value mismatch');
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.dropped[0]!.reason).toBe('old value mismatch');
 
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({ current: { text: correction, origin: 'human' }, scope });
@@ -1610,15 +1341,15 @@ test('C2 treats a partial value as an old-value mismatch', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
   expect(snapshotOf(await readFound(target.id))).toEqual(snapshotOf(target));
   expect(await manager.listMemories({ scope })).toHaveLength(1);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('a field-less correction never updates an existing target', async () => {
+test('a field-less correction never updates an existing target and is dropped', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  await service.capture({ current: { text: 'test.port=18080', origin: 'human' }, scope });
+  await service.capture({ current: { text: '记住：test.port=18080', origin: 'human' }, scope });
   const [target] = await manager.listMemories({ scope });
   expect(target).toBeDefined();
   const before = snapshotOf(target!);
@@ -1628,10 +1359,11 @@ test('a field-less correction never updates an existing target', async () => {
     written: result.written,
     updated: result.updated,
     pendingCreated: result.pendingCreated,
-  }).toEqual({ written: 0, updated: 0, pendingCreated: 1 });
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
+  expect(result.rules).toEqual({ N: 1 });
   expect(snapshotOf(await readFound(target!.id))).toEqual(before);
   expect(await manager.listMemories({ scope })).toHaveLength(1);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(1);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('broad auto titles are ranked last and labelled', async () => {
@@ -1668,19 +1400,20 @@ test('broad auto titles are ranked last and labelled', async () => {
   expect(result.skipped.join(',')).toContain('ranked last');
 });
 
-test('inline save after a comma is captured as a candidate', async () => {
+test('inline save after a comma is written directly', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
   const result = await service.capture({
     current: { text: '这是路由系统啊，记住要连 agentportalDb', origin: 'human' },
     scope,
   });
   expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-    written: 0,
-    pendingCreated: 1,
+    written: 1,
+    pendingCreated: 0,
   });
-  expect(await manager.listMemories({ scope })).toHaveLength(0);
-  const [candidate] = await manager.listMemoryCandidates({ scope });
-  expect(candidate?.title).toContain('agentportaldb');
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.title).toContain('agentportaldb');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('inline save with a deictic body is still dropped', async () => {
@@ -1690,30 +1423,13 @@ test('inline save with a deictic body is still dropped', async () => {
   expect(result.pendingCreated).toBe(0);
 });
 
-test('correction with a comma is not split by the inline save rule', () => {
+test('correction with a comma and no identifiable target is dropped', () => {
   const routed = routeText({ current: { text: '不是蓝色，是绿色', origin: 'human' }, scope });
   expect(routed.direct.filter((unit) => unit.rule === 'C1')).toHaveLength(0);
-  expect(routed.rules.N ?? 0).toBe(0);
+  expect(routed.pending).toHaveLength(0);
+  expect(routed.rules).toEqual({ N: 1 });
 });
 
-
-test('generic entity with an objective value is written directly', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const cases = [
-    '仓库地址是 /Users/gaosper/Documents/code/kit',
-    'kit 仓库地址是 /Users/gaosper/Documents/code/kit',
-    '服务地址是 https://example.org',
-  ];
-  for (const text of cases) {
-    const routed = routeText({ current: { text, origin: 'human' }, scope });
-    expect({ text, direct: routed.direct.length }).toEqual({ text, direct: 1 });
-  }
-  for (const text of cases) {
-    const result = await service.capture({ current: { text, origin: 'human' }, scope });
-    expect({ text, written: result.written }).toEqual({ text, written: 1 });
-  }
-  expect((await manager.listMemories({ scope })).length).toBeGreaterThanOrEqual(3);
-});
 
 test('binding ending with a question mark is dropped without writes or candidates', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
@@ -1770,10 +1486,12 @@ test('C1 requires the target to match the corrected field', async () => {
 
   const result = await service.capture({ current: { text: 'redis 端口改成 6380', origin: 'human' }, scope });
   expect(result.updated).toBe(0);
-  expect(result.pendingCreated).toBeGreaterThanOrEqual(1);
+  expect(result.pendingCreated).toBe(0);
+  expect(result.rules).toEqual({ N: 1 });
   const [after] = await manager.listMemories({ scope });
   expect(after!.content).toBe(before);
   expect(after!.revision).toBe(entry!.revision);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
 test('a user question is not captured as a qa candidate', () => {
@@ -1791,68 +1509,6 @@ test('credential placeholder whitelist requires the whole value', () => {
   const bypass = redactCredentialText('password=环境变量abc');
   expect(bypass.hits).toBe(1);
   expect(bypass.text).not.toContain('abc');
-});
-
-test('overflow units stay as candidates when direct writes fill the cap', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({
-    current: { text: 'aa.port=1；bb.port=2；cc.port=3；dd.port=4', origin: 'human' },
-    scope,
-  });
-  expect(result.written).toBe(3);
-  expect(result.pendingCreated).toBe(1);
-});
-
-test('qa filler replies are not kept as candidates', () => {
-  for (const text of ['好的', '你再看看', '怎么处理']) {
-    const routed = routeText({ current: { text, origin: 'human' }, previousAssistant: { text: '还需要我做什么？', origin: 'model' }, scope });
-    expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 0 });
-  }
-});
-
-test('authorization, bearer, jwt and pem credentials are detected and redacted', () => {
-  const samples = [
-    'Authorization: Bearer abcdefghijklmnopqrstuvwx',
-    'Bearer abcdefghijklmnopqrstuvwx1234',
-    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
-    '-----BEGIN RSA PRIVATE KEY-----',
-  ];
-  for (const sample of samples) {
-    expect({ sample, hit: hasCredential(sample) }).toEqual({ sample, hit: true });
-    const redacted = redactCredentialText(sample);
-    expect({ sample, hits: redacted.hits > 0 }).toEqual({ sample, hits: true });
-  }
-});
-
-test('overflow keeps five candidates when eight bindings arrive at once', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const result = await service.capture({
-    current: { text: 'aa.port=1；bb.port=2；cc.port=3；dd.port=4；ee.port=5；ff.port=6；gg.port=7；hh.port=8', origin: 'human' },
-    scope,
-  });
-  expect(result.written).toBe(3);
-  expect(result.pendingCreated).toBe(5);
-});
-
-test('PEM blocks are redacted as a whole, not just the header', () => {
-  const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretbody1234\n-----END RSA PRIVATE KEY-----';
-  expect(hasCredential(pem)).toBe(true);
-  const redacted = redactCredentialText(pem);
-  expect(redacted.hits).toBeGreaterThan(0);
-  expect(redacted.text).not.toContain('MIIEow');
-});
-
-test('residual scan respects the placeholder whitelist', () => {
-  const payload = JSON.stringify([{ text: 'password=环境变量' }]);
-  expect(redactCredentialText(payload).hits).toBe(0);
-});
-
-test('concurrent captures never exceed the daily candidate cap', async () => {
-  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const texts = Array.from({ length: 21 }, (_, index) => `服务地址是 https://example.org/${index}？`);
-  const results = await Promise.all(texts.map((text) => service.capture({ current: { text, origin: 'human' }, scope })));
-  const created = results.reduce((total, result) => total + result.pendingCreated, 0);
-  expect(created).toBeLessThanOrEqual(20);
 });
 
 test('daily chat, questions and hypotheses never produce memories or candidates', async () => {
@@ -1882,4 +1538,339 @@ test('JSON and markdown-bold credential assignments are detected', () => {
   expect(redactCredentialText('{"password":"abc123"}').hits).toBeGreaterThan(0);
   expect(redactCredentialText('**password**=abc123').hits).toBeGreaterThan(0);
   expect(redactCredentialText('token: "plain-value"').hits).toBeGreaterThan(0);
+});
+
+test('package-manager log lines are not treated as bindings', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = 'npm notice version: 2.4.0-rc.3';
+  expect(routeText({ current: { text, origin: 'human' }, scope }).rules).toEqual({ N: 1 });
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect(result.written).toBe(0);
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('explicit save is written once and is listable', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住：发布前先跑 e2e';
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('发布前先跑 e2e');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('explicit multi-line paste is saved as one memory', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住：\nnpm notice version: 2.4.0-rc.3\nnpm notice New minor version available';
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('npm notice version: 2.4.0-rc.3');
+  expect(list[0]!.content).toContain('npm notice New minor version available');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('top-level behavior instructions are written as preferences', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const texts = ['以后都用中文回答', '本项目统一使用 Bun'];
+  for (const text of texts) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
+      text,
+      written: 1,
+      pendingCreated: 0,
+    });
+  }
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(2);
+  expect(list.map((entry) => entry.type)).toEqual(['preference', 'preference']);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('deictic save without an object writes nothing to either store', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住这个';
+  const routed = routeText({ current: { text, origin: 'human' }, scope });
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
+    written: 0,
+    pendingCreated: 0,
+  });
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('implicit config and npm log do not enter rule capture', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['probe.port=18093', 'npm notice version: 2.4.0-rc.3']) {
+    const routed = routeText({ current: { text, origin: 'human' }, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
+      text,
+      written: 0,
+      pendingCreated: 0,
+    });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('explicit multi-fact body is written as one memory', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住：A=1。B=2';
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.content).toContain('A=1');
+  expect(list[0]!.content).toContain('B=2');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('explicit behavior negation is written as a preference', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '记住：以后不要跳过 e2e';
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 1, updated: 0, pendingCreated: 0 });
+
+  const list = await manager.listMemories({ scope });
+  expect(list).toHaveLength(1);
+  expect(list[0]!.type).toBe('preference');
+  expect(list[0]!.content).toContain('以后不要跳过 e2e');
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('negated save writes nothing to either store', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = '不要记住这个';
+  const routed = routeText({ current: { text, origin: 'human' }, scope });
+  expect(routed.rules).toEqual({ N: 1 });
+  expect(routed.direct).toHaveLength(0);
+  expect(routed.pending).toHaveLength(0);
+
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({ written: result.written, pendingCreated: result.pendingCreated }).toEqual({
+    written: 0,
+    pendingCreated: 0,
+  });
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('automation origin never executes an explicit save', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const result = await service.capture({
+    current: { text: '记住：发布前先跑 e2e', origin: 'host', reason: 'automation' },
+    scope,
+  });
+  expect({
+    written: result.written,
+    updated: result.updated,
+    pendingCreated: result.pendingCreated,
+  }).toEqual({ written: 0, updated: 0, pendingCreated: 0 });
+  expect(result.skipped.join(',')).toContain('non-human-origin');
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+});
+
+test('qa filler replies are not kept as candidates', () => {
+  for (const text of ['好的', '你再看看', '怎么处理']) {
+    const routed = routeText({ current: { text, origin: 'human' }, previousAssistant: { text: '还需要我做什么？', origin: 'model' }, scope });
+    expect({ text, pending: routed.pending.length }).toEqual({ text, pending: 0 });
+  }
+});
+
+test('authorization, bearer, jwt and pem credentials are detected and redacted', () => {
+  const samples = [
+    'Authorization: Bearer abcdefghijklmnopqrstuvwx',
+    'Bearer abcdefghijklmnopqrstuvwx1234',
+    'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+    '-----BEGIN RSA PRIVATE KEY-----',
+  ];
+  for (const sample of samples) {
+    expect({ sample, hit: hasCredential(sample) }).toEqual({ sample, hit: true });
+    const redacted = redactCredentialText(sample);
+    expect({ sample, hits: redacted.hits > 0 }).toEqual({ sample, hits: true });
+  }
+});
+
+test('PEM blocks are redacted as a whole, not just the header', () => {
+  const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAsecretbody1234\n-----END RSA PRIVATE KEY-----';
+  expect(hasCredential(pem)).toBe(true);
+  const redacted = redactCredentialText(pem);
+  expect(redacted.hits).toBeGreaterThan(0);
+  expect(redacted.text).not.toContain('MIIEow');
+});
+
+test('residual scan respects the placeholder whitelist', () => {
+  const payload = JSON.stringify([{ text: 'password=环境变量' }]);
+  expect(redactCredentialText(payload).hits).toBe(0);
+});
+
+test('credential-only explicit saves with labels are dropped', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['记住：api密钥是 k-1', '记住：数据库密码是 abc123', '记住：口令为 xyz']) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written, pending: result.pendingCreated }).toEqual({
+      text,
+      written: 0,
+      pending: 0,
+    });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+});
+
+test('explicit save keeps env-var credential references but drops literal secrets', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+
+  const envRef = await service.capture({
+    current: { text: '记住：xxx库的密钥是环境变量DB_PWD', origin: 'human' },
+    scope,
+  });
+  expect(envRef.written).toBe(1);
+  const [saved] = await manager.listMemories({ scope });
+  expect(saved!.content).toContain('DB_PWD');
+  expect(saved!.content).not.toContain('[REDACTED]');
+
+  const literal = await service.capture({
+    current: { text: '记住：xxx库的密钥是 abc123', origin: 'human' },
+    scope,
+  });
+  expect(literal.written).toBe(0);
+});
+
+test('credential leaks via fullwidth colon, env-style keys and brackets are redacted', () => {
+  expect(redactCredentialText('password：abc123').text).not.toContain('abc123');
+  expect(redactCredentialText('MY_DB_PWD=abc123').text).not.toContain('abc123');
+  expect(redactCredentialText('password=<abc123>').text).not.toContain('abc123');
+  expect(redactCredentialText('密码：环境变量DB_PWD').hits).toBe(0);
+  expect(redactCredentialText('密码为环境变量DB_PWD').hits).toBe(0);
+  expect(redactCredentialText('$DB_PWD').hits).toBe(0);
+});
+
+test('explicit save never applies content-quality gates', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+
+  // 超长正文：按存储上限保存，不按 8000 截断。
+  const longBody = '长'.repeat(8001);
+  const long = await service.capture({
+    current: { text: `记住：${longBody}`, origin: 'human' },
+    scope,
+  });
+  expect(long.written).toBe(1);
+  const savedLong = (await manager.listMemories({ scope }))[0]!;
+  expect(savedLong.content).toContain(longBody);
+
+  // 问句正文：用户明确说保存，就保存原文。
+  const question = await service.capture({
+    current: { text: '记住：发布前要跑 e2e 吗？', origin: 'human' },
+    scope,
+  });
+  expect(question.written).toBe(1);
+  expect((await manager.listMemories({ scope })).some((e) => e.content.includes('跑 e2e 吗？'))).toBe(true);
+
+  // 单字正文：不按质量拒绝。
+  const oneChar = await service.capture({ current: { text: '记住：甲', origin: 'human' }, scope });
+  expect(oneChar.written).toBe(1);
+  expect((await manager.listMemories({ scope })).some((e) => e.content.includes('结论：甲'))).toBe(true);
+
+  // 普通词「数据库」不是凭据。
+  const plainWord = await service.capture({ current: { text: '记住：数据库', origin: 'human' }, scope });
+  expect(plainWord.written).toBe(1);
+  expect((await manager.listMemories({ scope })).some((e) => e.content.includes('结论：数据库'))).toBe(true);
+});
+
+test('explicit save preserves code blocks and indentation', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const text = ['记住：脚本如下', '```bash', 'if true; then', '  echo hi', 'fi', '```'].join('\n');
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect(result.written).toBe(1);
+  const [saved] = await manager.listMemories({ scope });
+  expect(saved!.content).toContain('```bash');
+  expect(saved!.content).toContain('  echo hi');
+  expect(saved!.content).toContain('if true; then');
+});
+
+test('explicit saves ignore the per-turn write budget', async () => {
+  const service = new AutoCaptureService(manager, { ...DEFAULT_AUTO_CAPTURE, maxWritesPerTurn: 1 });
+  const text = '以后用 pnpm。禁止在 main 上提交。统一用 Bun。默认使用 bun 跑测试。';
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect(result.written).toBe(4);
+  expect(result.skipped).toEqual([]);
+  expect(await manager.listMemories({ scope })).toHaveLength(4);
+});
+
+test('deictic save resolves a unique structured value from previous user text', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const result = await service.capture({
+    current: { text: '记住这个', origin: 'human' },
+    previousUser: { text: '服务地址是 http://127.0.0.1:18098', origin: 'human' },
+    scope,
+  });
+  expect(result.written).toBe(1);
+  const [saved] = await manager.listMemories({ scope });
+  expect(saved!.content).toContain('http://127.0.0.1:18098');
+});
+
+test('user body lines starting with 时间 are not treated as auto metadata', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  await service.capture({ current: { text: '记住：meeting\n时间：周一', origin: 'human' }, scope });
+  const second = await service.capture({
+    current: { text: '记住：meeting\n时间：周二', origin: 'human' },
+    scope,
+  });
+  expect(second.written).toBe(1);
+  const list = await manager.listMemories({ scope });
+  expect(list.some((entry) => entry.content.includes('时间：周二'))).toBe(true);
+});
+
+test('fullwidth colon after the save prefix is not part of the body', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  await service.capture({ current: { text: '记住：test.db.port=18080', origin: 'human' }, scope });
+  const [saved] = await manager.listMemories({ scope });
+  expect(saved!.content).toContain('结论：test.db.port=18080');
+  expect(saved!.content).not.toContain('结论：：');
+});
+
+test('$VAR credential references are saved, literal secrets are not', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const envRef = await service.capture({
+    current: { text: '记住：xxx库的密码是 $DB_PWD', origin: 'human' },
+    scope,
+  });
+  expect(envRef.written).toBe(1);
+  expect((await manager.listMemories({ scope }))[0]!.content).toContain('$DB_PWD');
+
+  const literal = await service.capture({
+    current: { text: '记住：yyy库的密码是 zzz789', origin: 'human' },
+    scope,
+  });
+  expect(literal.written).toBe(0);
 });
