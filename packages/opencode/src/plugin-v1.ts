@@ -574,7 +574,7 @@ export const v1Plugin: Plugin = async (
       },
       memory_store: {
         description:
-          '存储一条长期记忆（个人偏好、环境事实、决策、经验教训等）。适合记下将来要复用、跨会话保留的知识。',
+          '仅在用户明确要求「记住/保存」某条信息时调用；用户没有明确指令时不要自行存储或补存，先询问确认。适合记下将来要复用、跨会话保留的知识。',
         args: {
           title: z.string().min(1).max(200).describe('简短标题'),
           content: z.string().min(1).max(50000).describe('有厚度的知识内容，一段话讲清主题'),

@@ -25,6 +25,12 @@ test('plugin module exposes only a default export', async () => {
   expect(Object.keys(mod)).toEqual(['default']);
 });
 
+test('memory_store requires an explicit user instruction', async () => {
+  const description = hooks.tool.memory_store.description as string;
+  expect(description).toContain('仅在用户明确要求');
+  expect(description).toContain('不要自行存储');
+});
+
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'opencode-memory-plugin-'));
   hooks = await plugin.server({ client: undefined }, { dbPath: join(dir, 'test.db'), pinQuota: 2000 });
