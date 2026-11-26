@@ -1583,21 +1583,19 @@ test('explicit multi-line paste is saved as one memory', async () => {
   expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
 });
 
-test('top-level behavior instructions are written as preferences', async () => {
+test('behavior rules require an explicit save instruction', async () => {
   const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
-  const texts = ['以后都用中文回答', '本项目统一使用 Bun'];
-  for (const text of texts) {
+  for (const text of ['以后都用中文回答', '本项目统一使用 Bun']) {
+    const routed = routeText({ current: { text, origin: 'human' }, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
     const result = await service.capture({ current: { text, origin: 'human' }, scope });
-    expect({ text, written: result.written, pendingCreated: result.pendingCreated }).toEqual({
-      text,
-      written: 1,
-      pendingCreated: 0,
-    });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
   }
-  const list = await manager.listMemories({ scope });
-  expect(list).toHaveLength(2);
-  expect(list.map((entry) => entry.type)).toEqual(['preference', 'preference']);
-  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+  for (const text of ['记住：以后都用中文回答', '记住：本项目统一使用 Bun']) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 1 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(2);
 });
 
 test('deictic save without an object writes nothing to either store', async () => {
@@ -1820,10 +1818,16 @@ test('explicit save preserves code blocks and indentation', async () => {
 
 test('explicit saves ignore the per-turn write budget', async () => {
   const service = new AutoCaptureService(manager, { ...DEFAULT_AUTO_CAPTURE, maxWritesPerTurn: 1 });
-  const text = '以后用 pnpm。禁止在 main 上提交。统一用 Bun。默认使用 bun 跑测试。';
-  const result = await service.capture({ current: { text, origin: 'human' }, scope });
-  expect(result.written).toBe(4);
-  expect(result.skipped).toEqual([]);
+  const texts = [
+    '记住：以后用 pnpm',
+    '记住：禁止在 main 上提交',
+    '记住：统一用 Bun',
+    '记住：默认使用 bun 跑测试',
+  ];
+  for (const text of texts) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 1 });
+  }
   expect(await manager.listMemories({ scope })).toHaveLength(4);
 });
 
@@ -1873,4 +1877,93 @@ test('$VAR credential references are saved, literal secrets are not', async () =
     scope,
   });
   expect(literal.written).toBe(0);
+});
+
+test('ordinary imperatives are not captured as behavior rules', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['全部列出来我看下', '不要批准或拒绝', '不要调用 memory_candidate_review']) {
+    const routed = routeText({ current: { text, origin: 'human' }, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
+    expect({ text, direct: routed.direct.length }).toEqual({ text, direct: 0 });
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+});
+
+test('behavior rules without an explicit save are not captured', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  const cases = ['以后不要用 npm', '统一不要跳过 e2e', '禁止在 main 上提交', '统一用 Bun'];
+  for (const text of cases) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+});
+
+test('negated save never triggers a correction update', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  await service.capture({ current: { text: '记住：test.port=18093', origin: 'human' }, scope });
+  const [target] = await manager.listMemories({ scope });
+  expect(target).toBeDefined();
+  const before = snapshotOf(target!);
+
+  const text = '不要记住：test.port 不是 18093，是 18094';
+  const routed = routeText({ current: { text, origin: 'human' }, scope, autoEntries: [target!] });
+  expect(routed.rules).toEqual({ N: 1 });
+  const result = await service.capture({ current: { text, origin: 'human' }, scope });
+  expect({ written: result.written, updated: result.updated }).toEqual({ written: 0, updated: 0 });
+  expect(snapshotOf(await readFound(target!.id))).toEqual(before);
+});
+
+test('one-off assistant directives are not behavior rules', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['统一列出这十条记录', '下次打开这个文件']) {
+    const routed = routeText({ current: { text, origin: 'human' }, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(0);
+});
+
+test('project-scoped prohibitions also require an explicit save', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of ['本项目不要用 yarn', '以后再也不要用 npm']) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
+  }
+  for (const text of ['记住：本项目不要用 yarn', '记住：以后再也不要用 npm']) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 1 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(2);
+});
+
+test('English explicit saves require a colon and a body', async () => {
+  const service = new AutoCaptureService(manager, DEFAULT_AUTO_CAPTURE);
+  for (const text of [
+    'Remember: this project uses Bun.',
+    'Please remember: use Bun for scripts.',
+    'remember: keep the API stable',
+    'Remember: never use npm.',
+  ]) {
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 1 });
+  }
+  expect(await manager.listMemories({ scope })).toHaveLength(4);
+
+  for (const text of [
+    'Remember when we used npm?',
+    'Note that this test currently fails.',
+    'Save this file as report.txt.',
+    'Remember: this',
+    "don't remember: use npm",
+    'do not save this to memory: use npm',
+  ]) {
+    const routed = routeText({ current: { text, origin: 'human' }, scope });
+    expect({ text, rules: routed.rules }).toEqual({ text, rules: { N: 1 } });
+    const result = await service.capture({ current: { text, origin: 'human' }, scope });
+    expect({ text, written: result.written }).toEqual({ text, written: 0 });
+  }
 });

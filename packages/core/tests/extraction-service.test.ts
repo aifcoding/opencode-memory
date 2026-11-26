@@ -255,3 +255,34 @@ test('credentials in the instructions are rejected before generation', async () 
   expect(called).toBe(0);
   await manager.close();
 });
+
+test('autoApprove writes memories directly and leaves no pending candidates', async () => {
+  const manager = fresh();
+  const generator = {
+    async generate() {
+      return {
+        text: JSON.stringify({
+          candidates: [
+            {
+              title: 'atlas 仓库路径',
+              content: 'atlas 仓库统一放在 /srv/atlas，部署脚本从这里取构件。',
+              type: 'fact',
+              suggestedDomain: 'code',
+              evidenceQuote: 'atlas 仓库统一放 /srv/atlas',
+            },
+          ],
+        }),
+      };
+    },
+  };
+  const result = await service(manager, generator).extract(
+    request([message('u1', 'atlas 仓库统一放 /srv/atlas')], { autoApprove: true }),
+  );
+  expect(result.status).toBe('completed');
+  expect(result.approvedCount).toBe(1);
+  expect(await manager.listMemoryCandidates({ scope })).toHaveLength(0);
+  const memories = await manager.listMemories({ scope });
+  expect(memories).toHaveLength(1);
+  expect(memories[0]!.trust).toBe('high');
+  manager.close();
+});

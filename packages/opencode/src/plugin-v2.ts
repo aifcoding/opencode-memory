@@ -271,7 +271,7 @@ export async function v2Setup(ctx: V2Context) {
             content: [
               {
                 type: 'text',
-                text: `<mem_block role="reference" source="memory-pending">有 ${outcome.pendingCapped ? '至少 ' : ''}${outcome.pending} 条候选记忆待审批：终端运行 memory-review --list 查看，memory-review --approve 1,2 或 --reject 3 处理；也可让助手调用 memory_candidates。候选未批准前不参与召回。</mem_block>`,
+                text: `<mem_block role="reference" source="memory-pending">有 ${outcome.pendingCapped ? '至少 ' : ''}${outcome.pending} 条候选记忆待审批：在 TUI 运行 /memory-candidates 查看，/memory-review approve 12,13 处理；也可让助手调用 memory_candidates。候选未批准前不参与召回。</mem_block>`,
               },
             ],
           });

@@ -10,6 +10,7 @@ import { ExtractionService, composeInstructions, readInstructionsFile } from '@a
 import type { ExtractionMessage, TextGenerator } from '@aifcoding/memory-core';
 import { extractionMaterial, type HostMessage } from './context/material';
 import { defaultRulesPath, ensureRulesTemplate } from './capture/rules';
+import { ensureCommandTemplates } from './capture/commands';
 import { suggestedDomainHint } from './capture/hint';
 import { checkAndRefresh } from './self-update';
 
@@ -73,6 +74,8 @@ export const ConfigSchema = z
           ])
           .optional(),
         maxCandidates: z.number().int().min(1).max(20).default(8),
+        /** true：提取完成后直接批准候选（写入 trust=high 的正式记忆）；默认 false 走审批。 */
+        autoApprove: z.boolean().default(false),
       })
       .strict()
       .optional(),
@@ -122,6 +125,7 @@ async function captureSession(
   trustRoleAsOrigin: boolean,
   model: { provider: string; model: string; variant?: string } | undefined,
   instructionsFile: string | undefined,
+  autoApprove: boolean,
 ): Promise<string> {
   if (!client) return '无法提取：OpenCode client 不可用。';
   // v2 宿主能给出结构化来源：注入消息（automation 等）不得进入提取材料。
@@ -141,6 +145,7 @@ async function captureSession(
       maxCandidates,
       model,
       instructionsFile,
+      autoApprove,
     );
   }
   // v1 宿主没有结构化来源，也无法强制工具隔离（SDK 无 permissions/switchModel）；
@@ -161,6 +166,7 @@ async function captureMessages(
   maxCandidates: number,
   model?: { provider: string; model: string; variant?: string },
   instructionsFile?: string,
+  autoApprove = false,
 ): Promise<string> {
   if (!client) return '无法提取：OpenCode client 不可用。';
   if (messages.length === 0) return '没有可提取的材料。';
@@ -257,8 +263,16 @@ async function captureMessages(
     targetFingerprint: model
       ? `${model.provider}/${model.model}${model.variant ? `#${model.variant}` : ''}`
       : 'host-default',
+    autoApprove,
   });
   if (outcome.status === 'completed') {
+    const created = outcome.approvedCount ?? 0;
+    const linked = outcome.linkedCount ?? 0;
+    const failed = outcome.failedCount ?? 0;
+    const pending = Math.max(0, outcome.candidateCount - created - linked);
+    if (created + linked + failed > 0) {
+      return `已提取 ${outcome.candidateCount} 条：新建 ${created}，关联已有 ${linked}，失败 ${failed}，待审 ${pending}。`;
+    }
     return `已生成 ${outcome.candidateCount} 条候选记忆（过滤 ${outcome.filteredCount} 条），请使用 memory_candidates 审批。`;
   }
   if (outcome.status === 'already-completed') return '该会话内容已提取过。';
@@ -408,7 +422,10 @@ export const v1Plugin: Plugin = async (
   const client = input.client;
   const fileConfig = readConfigFile();
   // 首次加载生成默认配置文件（用户目录；测试环境不写）。
-  if (process.env.NODE_ENV !== 'test') ensureConfigFile();
+  if (process.env.NODE_ENV !== 'test') {
+    ensureConfigFile();
+    ensureCommandTemplates();
+  }
   // 合并文件配置与 tuple options，统一严格校验（options 覆盖文件配置）
   const config = ConfigSchema.safeParse({
     ...fileConfig,
@@ -470,6 +487,7 @@ export const v1Plugin: Plugin = async (
     onCompaction: true,
     trustRoleAsOrigin: false,
     maxCandidates: 8,
+    autoApprove: false,
     ...rawCapture,
     agent: undefined,
     model,
@@ -490,7 +508,8 @@ export const v1Plugin: Plugin = async (
   return {
     tool: {
       memory_capture: {
-        description: '从当前会话提取待审批的候选记忆（默认关闭）。',
+        description:
+          '从当前会话提取记忆（需 capture.enabled）。autoApprove=true 时直接入库；否则生成待审批候选。 English: extract memories from this session (requires capture.enabled); autoApprove=true stores directly, otherwise creates pending candidates.',
         args: {},
         async execute(_args: {}, context: ToolContext) {
           if (!capture.enabled) return '未启用安全辅助记忆提取。';
@@ -505,11 +524,12 @@ export const v1Plugin: Plugin = async (
             capture.trustRoleAsOrigin,
             capture.model,
             effectiveInstructionsFile,
+            capture.autoApprove,
           );
         },
       },
       memory_candidates: {
-        description: '列出尚未审批的候选记忆。',
+        description: '列出尚未审批的候选记忆。 English: list pending candidates.',
         args: {
           status: z.enum(['pending', 'approved', 'rejected']).optional(),
           suggestedDomain: z.enum(['code', 'user', 'business', 'uncertain']).optional(),
@@ -556,7 +576,7 @@ export const v1Plugin: Plugin = async (
         },
       },
       memory_candidate_review: {
-        description: '批准或拒绝候选记忆。',
+        description: '批准或拒绝候选记忆。 English: approve or reject one candidate by id.',
         args: { id: z.number().int().positive(), decision: z.enum(['approve', 'reject']) },
         async execute(args: { id: number; decision: 'approve' | 'reject' }) {
           const result = await manager.reviewMemoryCandidate({
@@ -574,7 +594,7 @@ export const v1Plugin: Plugin = async (
       },
       memory_store: {
         description:
-          '仅在用户明确要求「记住/保存」某条信息时调用；用户没有明确指令时不要自行存储或补存，先询问确认。适合记下将来要复用、跨会话保留的知识。',
+          '仅在用户明确要求「记住/保存」某条信息时调用；用户没有明确指令时不要自行存储或补存，先询问确认。适合记下将来要复用、跨会话保留的知识。 English: call only when the user explicitly asks to remember or save; otherwise ask first.',
         args: {
           title: z.string().min(1).max(200).describe('简短标题'),
           content: z.string().min(1).max(50000).describe('有厚度的知识内容，一段话讲清主题'),
@@ -600,7 +620,7 @@ export const v1Plugin: Plugin = async (
 
       memory_update: {
         description:
-          '按 id 更新已有记忆的标题/正文/摘要/标签/类型。保留 id、pin 状态、来源与信任等级；正文或标题变化会递增 revision，仅元数据变化不递增。可传 expectedRevision 做乐观并发校验。',
+          '按 id 更新已有记忆的标题/正文/摘要/标签/类型。保留 id、pin 状态、来源与信任等级；正文或标题变化会递增 revision，仅元数据变化不递增。可传 expectedRevision 做乐观并发校验。 English: update one memory by id.',
         args: {
           id: z.number().int().positive().describe('记忆 id'),
           title: z.string().min(1).max(200).optional().describe('新标题'),
@@ -651,7 +671,7 @@ export const v1Plugin: Plugin = async (
 
       memory_recall: {
         description:
-          '检索已存的记忆。涉及历史决策、既有配置、"上次/之前"的结论时优先调用。默认返回标题+摘要（无摘要时为正文前 200 字预览），不返回全文；全文用 memory_read。有 query 无匹配返回空，绝不返回无关条目。score 仅表示本次查询的相对相关度，不能跨查询比较。',
+          '检索已存的记忆。涉及历史决策、既有配置、"上次/之前"的结论时优先调用。默认返回标题+摘要（无摘要时为正文前 200 字预览），不返回全文；全文用 memory_read。有 query 无匹配返回空，绝不返回无关条目。score 仅表示本次查询的相对相关度，不能跨查询比较。 English: search stored memories; use memory_read for full text.',
         args: {
           query: z.string().trim().min(1).describe('检索词或问题'),
           maxCharacters: z
@@ -724,7 +744,7 @@ export const v1Plugin: Plugin = async (
       },
 
       memory_ls: {
-        description: '列出已存的记忆条目（按更新时间倒序）。',
+        description: '列出已存的记忆条目（按更新时间倒序）。 English: list stored memories (id, title, type).',
         args: { limit: z.number().int().min(1).max(200).default(20).describe('最多返回条数') },
         async execute(args: { limit: number }) {
           const list = await manager.listMemories({
@@ -739,7 +759,7 @@ export const v1Plugin: Plugin = async (
       },
 
       memory_read: {
-        description: '按 id 读取某条记忆的完整内容。',
+        description: '按 id 读取某条记忆的完整内容。 English: read one memory by id.',
         args: { id: z.number().describe('记忆 id') },
         async execute(args: { id: number }) {
           const result = await manager.readMemory({ id: args.id });
@@ -755,7 +775,7 @@ export const v1Plugin: Plugin = async (
       },
 
       memory_forget: {
-        description: '删除一条记忆（软删；删除后不再出现在列表和检索结果中）。',
+        description: '删除一条记忆（软删；删除后不再出现在列表和检索结果中）。 English: soft-delete one memory by id.',
         args: { id: z.number().describe('记忆 id') },
         async execute(args: { id: number }) {
           const result = await manager.forgetMemory({ id: args.id });
@@ -765,7 +785,7 @@ export const v1Plugin: Plugin = async (
 
       memory_pin: {
         description:
-          '固定/取消固定一条记忆。固定后每轮自动注入上下文。pinMode=summary 时只注入一行摘要（需提供 summary），pinMode=full 注入全文。受配额限制，超额会拒绝。',
+          '固定/取消固定一条记忆。固定后每轮自动注入上下文。pinMode=summary 时只注入一行摘要（需提供 summary），pinMode=full 注入全文。受配额限制，超额会拒绝。 English: pin/unpin a memory; pinning requires trust=high.',
         args: {
           id: z.number().int().positive().describe('记忆 id'),
           pinned: z.boolean().describe('true=固定，false=取消固定'),
@@ -978,6 +998,7 @@ export const v1Plugin: Plugin = async (
             capture.maxCandidates,
             capture.model,
             effectiveInstructionsFile,
+            capture.autoApprove,
           );
         } catch (error) {
           logError(client, 'Capture extraction failed', error);

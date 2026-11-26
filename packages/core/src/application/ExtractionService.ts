@@ -25,12 +25,20 @@ export interface ExtractionRequest {
   instructions: string;
   /** 目标指纹（provider/model 或 agent），参与幂等键。 */
   targetFingerprint: string;
+  /** true：提取完成后直接批准候选（写入 trust=high 的正式记忆）；默认 false 走审批。 */
+  autoApprove?: boolean;
   signal?: AbortSignal;
 }
 
 export interface ExtractionOutcome {
   status: 'completed' | 'already-completed' | 'in-progress' | 'skipped' | 'failed';
   candidateCount: number;
+  /** autoApprove 时新建入库的条数。 */
+  approvedCount?: number;
+  /** autoApprove 时内容已存在、直接关联既有记忆的条数。 */
+  linkedCount?: number;
+  /** autoApprove 时批准失败（安全拒绝/冲突/异常）的条数，仍保持待审。 */
+  failedCount?: number;
   filteredCount: number;
   reason?: string;
 }
@@ -164,9 +172,32 @@ export class ExtractionService {
         leaseToken: begun.leaseToken,
         candidates: drafts,
       });
+      let approvedCount = 0;
+      let linkedCount = 0;
+      let failedCount = 0;
+      if (request.autoApprove) {
+        for (const candidate of completed.candidates) {
+          try {
+            const reviewed = await this.manager.reviewMemoryCandidate({
+              id: candidate.id,
+              decision: 'approve',
+              scope: request.scope,
+            });
+            if (reviewed.status === 'approved') approvedCount += 1;
+            else if (reviewed.status === 'already_exists') linkedCount += 1;
+            else failedCount += 1;
+          } catch {
+            // 单条批准失败不影响其他候选；计入失败并保持待审。
+            failedCount += 1;
+          }
+        }
+      }
       return {
         status: 'completed',
         candidateCount: completed.candidateCount,
+        approvedCount,
+        linkedCount,
+        failedCount,
         filteredCount: trimmed ? 1 : 0,
       };
     } catch (error) {

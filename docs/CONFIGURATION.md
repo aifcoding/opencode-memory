@@ -102,7 +102,8 @@ $HOME/.config/opencode
       // "variant": "..."         // 可选：模型变体
     },
     "instructionsFile": "/Users/you/.config/opencode/memory-capture.rules.md",
-    "maxCandidates": 8            // 单次最多候选（1..20）
+    "maxCandidates": 8,           // 单次最多候选（1..20）
+    "autoApprove": false          // true：提取完直接入库（trust=high），不再走审批
   },
 
   // 启动时检查 npm 最新版并自动刷新插件缓存
@@ -130,6 +131,7 @@ $HOME/.config/opencode
 | `capture.model` | `object` | 未配置 | `{provider, model, variant?}`；未配置用宿主默认模型；配置后不可用即失败，不回退 |
 | `capture.instructionsFile` | `string` | 未配置 | 用户规则 md 的本地绝对路径；读不到/为空/超限即失败 |
 | `capture.maxCandidates` | `number` | `8` | 单次最多候选（1..20） |
+| `capture.autoApprove` | `boolean` | `false` | `true` 时提取完直接批准入库（`trust=high`，立即可召回，标注「已核实」，不进入 C1 自动纠正，可 Pin）；`false` 保持待审 + 每轮提示。**需 2.5.0+**：2.4.0 及更早的 `capture` 为 strict，包含该字段会拒绝加载 |
 | `capture.target` | `object` | 未配置 | **已弃用**：`model` 自动映射为 `capture.model`；`agent` 启动报迁移错误 |
 | `capture.agent` | `string` | 未配置 | **已弃用**：启动报迁移错误，改用 `capture.model` |
 | `capture.trustRoleAsOrigin` | `boolean` | `false` | 仅 v1 兼容保留：v1 无法强制工具隔离，提取 fail-closed 拒绝 |
@@ -160,17 +162,31 @@ $HOME/.config/opencode
 
 注意：`capture.enabled=true` 会把经本地脱敏的会话材料发送给所选模型，可能产生费用；不想发送就保持 `false`。
 
+#### TUI 斜杠命令（首次加载自动生成）
+
+插件会在 `~/.config/opencode/commands/` 写入四个命令模板（已存在不覆盖）：
+
+| 命令 | 调用的工具 | 作用 |
+|---|---|---|
+| `/memory-list` | `memory_ls` | 列出长期记忆（id/类型/标题，按更新时间倒序） |
+| `/memory-candidates` | `memory_candidates` | 列出待审候选（id/domain/status/标题） |
+| `/memory-review` | `memory_candidate_review` | 逐条批准/拒绝，例如 `/memory-review approve 12,13` |
+| `/memory-search` | `memory_recall` + `memory_read` | 检索记忆摘要，需要全文再按 id 读取 |
+
+命令本质是提示模型调用上述工具，每次会消耗一次模型调用；想零成本查询可改用本地 CLI。
+
 #### 行为与限制
 
 - 记忆指令执行器（见 `openspec/changes/2026-11-26-explicit-memory-instructions/`）：
   - 显式保存（`记住/记一下/保存下来 + 正文`）→ 立即直写，整条消息一条记忆；正文原样保留（代码块/缩进/换行），不按问句/长度/字数做质量筛选；
-  - 完整行为指令（`以后/下次/统一/禁止/默认/一律/全部`，可带「本项目」）→ 立即直写为偏好；
+  - 行为规则（`以后/统一/禁止/默认` 等）不再自动写入；需要保存请显式说 `记住：以后统一用 Bun`；普通祈使句（`不要…`/`全部…`）同样不写入；
   - 明确纠正（带 `更正/改成/记住` 等意图 + 唯一目标 + 旧值相符）→ CAS 更新为新值，否则丢弃并反馈；普通聊天里的纠正不会改写记忆；
   - 隐式内容（随口配置、日志、决策句、问答对）→ 规则层零写入，交给 LLM 提取。
 - 未审批候选不在 `memories` 表，默认召回与 `memory_recall` 都不会返回；审批沿用现有候选审核流程。
 - 直写与更新都不会改写人工记忆或高信任记忆；非 C1 路径一律不得按标题覆盖，同标题出现不同内容时另建唯一标题条目（不覆盖、不转候选）。
 - 代码围栏与引用块内容参与显式保存正文（原样入库）；C1 需给出白名单字段与合法新值；自动条目标题为单个宽泛词时不参与自动召回注入。
 - 显式指令不受 `maxWritesPerTurn` 截断；同一 scope 每日最多 20 条**新增**候选（按当天创建数计，批准不恢复额度）；14 天候选过期尚未实现。
+- 英文显式保存：仅认 `Remember: <正文>` / `Save to memory: <正文>`（可带 `Please`，必须有冒号与正文）；裸 `remember/note that/keep in mind` 不写入。
 - 凭据：命中片段脱敏为 `[REDACTED]` 后继续；整条仅凭据时放弃；`password=环境变量` 等占位符不脱敏。
 - 凭据过滤只拒绝命中现有规则的输入（密码、token、私钥、含 userinfo 的连接串），不保证识别所有敏感信息；不要输入或保存凭据。
 - 自动召回统一使用 `global/default`，无项目隔离、无独立 tags 检索通道；准入按标题关键词、英文词边界与泛词过滤。

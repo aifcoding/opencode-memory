@@ -25,7 +25,7 @@ template-version: 1
 程序会在本文件内容之后追加约束，声明冲突时以程序约束为准。
 编辑本文件不能关闭来源筛选、基础风控或候选审批。
 长度、措辞、引用等质量要求主要用于指导模型，不保证每次遵循。
-提取结果仅为待审批候选，不会因此直接成为正式记忆。
+默认仅生成待审批候选；若启用 capture.autoApprove，提取结果会直接写入正式记忆（trust=high）。
 
 本文件全文（包括注释）会随提取请求发送给模型。
 请勿写入密码、token、密钥等凭据；脱敏不能保证识别所有秘密。
@@ -34,6 +34,12 @@ template-version: 1
 ## 默认策略
 
 ${DEFAULT_RULES}
+
+## English notes
+
+Extract durable preferences, facts, decisions, solutions and conventions.
+Keep the language of the source material; do not translate titles/content.
+Do not include credentials, one-off task details, or unconfirmed guesses.
 
 ## 自定义补充（可选）
 

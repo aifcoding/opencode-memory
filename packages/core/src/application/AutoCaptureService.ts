@@ -43,6 +43,31 @@ const EXPLICIT_SAVE =
   /^(?:请)?(?:记住|记一下|保存下来)(?!了|吧|啊|哦|嗯|哈)(?:\s*[:：,，]\s*)?([\s\S]*)$/;
 /** 否定的是「保存」这个动作本身（不要记住 X），而不是保存一条禁止性规则（记住：不要做 X）。 */
 const NEGATED_SAVE = /^(?:请)?(?:不要|别|不用|无需|不需要)\s*(?:记住|记一下|保存下来|记下)/;
+
+/**
+ * E1（英文）：只认整条消息开头的严格命令格式，必须有冒号与正文。
+ * 不接受裸 `remember/note that/keep in mind`，避免把普通表达写成记忆。
+ */
+const EXPLICIT_SAVE_EN = /^(?:please\s+)?(?:remember|save\s+to\s+memory)\s*:\s*([\s\S]+)$/i;
+const EXPLICIT_SAVE_EMPTY_EN = /^(?:please\s+)?(?:remember|save\s+to\s+memory)\s*:\s*$/i;
+/** 英文否定保存：don't remember / do not save ... to memory（不移除已有记忆）。 */
+const NEGATED_SAVE_EN =
+  /^(?:please\s+)?(?:do\s+not|don't|dont)\s+(?:remember\b|save\b[^\n]*\bto\s+memory\b)/i;
+/** 英文纯指代：不做上下文消解，要求用户补全正文。 */
+const DEICTIC_EN = /^(?:this|that|it|these|those|the above|that one)$/i;
+
+function isNegatedSave(text: string): boolean {
+  return NEGATED_SAVE.test(text) || NEGATED_SAVE_EN.test(text);
+}
+
+/** 返回显式保存正文；undefined 表示不是显式保存指令。 */
+function matchExplicitSave(text: string): string | undefined {
+  const zh = text.match(EXPLICIT_SAVE);
+  if (zh) return zh[1] ?? '';
+  const en = text.match(EXPLICIT_SAVE_EN);
+  if (en) return en[1] ?? '';
+  return undefined;
+}
 /** E2：弱 explicit 措辞。 */
 const EXPLICIT_WEAK = /(?:配置是|以后都|下次用)/;
 
@@ -248,7 +273,8 @@ export function isReferenceRequest(text: string): boolean {
 export function detectSignals(text: string): AutoSignal[] {
   const signals: AutoSignal[] = [];
   const trimmed = text.trim();
-  if (EXPLICIT_SAVE.test(trimmed) || EXPLICIT_WEAK.test(trimmed)) signals.push('explicit');
+  if (EXPLICIT_SAVE.test(trimmed) || EXPLICIT_SAVE_EN.test(trimmed) || EXPLICIT_WEAK.test(trimmed))
+    signals.push('explicit');
   if (CORRECTION_PAIR.test(trimmed) || CORRECTION_SET.test(trimmed)) signals.push('correction');
   if (hasStructuredValue(trimmed)) signals.push('structured');
   if (DECISION_WORD.test(trimmed)) signals.push('decision');
@@ -332,18 +358,45 @@ function stripSynthetic(text: string): string {
     .trim();
 }
 
-/** 逐单元切分；显式保存指令整体保留，不拆条。 */
+/** 逐单元切分；显式保存指令整体保留，不拆条；括号/引号内的分隔符不切。 */
 function splitUnits(text: string): string[] {
   const trimmed = text.trim();
-  if (EXPLICIT_SAVE.test(trimmed)) return [trimmed];
-  const parts = trimmed
-    .split(/(?<=[。！？!?\n；;])/)
+  if (EXPLICIT_SAVE.test(trimmed) || EXPLICIT_SAVE_EN.test(trimmed)) return [trimmed];
+  const parts: string[] = [];
+  let buffer = '';
+  let depth = 0;
+  let quote: string | null = null;
+  const OPEN = '（(【[{';
+  const CLOSE = '）)】]}';
+  const SEPARATORS = '。！？!?\n；;';
+  for (const char of trimmed) {
+    if (quote) {
+      buffer += char;
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '“' || char === '"') {
+      quote = char === '“' ? '”' : char;
+      buffer += char;
+      continue;
+    }
+    if (OPEN.includes(char)) depth += 1;
+    else if (CLOSE.includes(char)) depth = Math.max(0, depth - 1);
+    if (depth === 0 && SEPARATORS.includes(char)) {
+      parts.push(buffer);
+      buffer = '';
+      continue;
+    }
+    buffer += char;
+  }
+  if (buffer) parts.push(buffer);
+  const cleaned = parts
     .map((part) => part.trim().replace(/[。；;]+$/, ''))
     .filter((part) => part.length >= 2);
   // 逗号后跟随明确保存指令时单独成单元；不整体按逗号切，避免拆坏「不是 X，是 Y」。
   const units: string[] = [];
   const inlineSave = /^(.*?)[，,]\s*((?:请)?(?:记住|记一下|保存下来)[\s\S]*)$/;
-  for (const part of parts) {
+  for (const part of cleaned) {
     const match = part.match(inlineSave);
     if (match && match[1]!.trim().length > 0) {
       units.push(match[1]!.trim(), match[2]!.trim());
@@ -616,18 +669,20 @@ function statementGate(text: string): string | undefined {
 function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
   const trimmed = text.trim();
 
+  // 0) 否定保存优先级最高：`不要记住：X 不是 A，是 B` 不得触发纠正更新。
+  if (isNegatedSave(trimmed)) return dropped('N', text, 'negated save');
+
   // 1) 明确纠正：只有带明确记忆意图的纠正才更新既有条目；聊天里的普通纠正不碰记忆。
   const correction = routeCorrection(text, ctx);
   if (correction?.rule === 'C1') return correction;
 
-  // 2) 显式保存：记住/记一下/保存下来 + 正文。不评价价值、不降候选、不按问句/长度拒绝。
-  const save = text.match(EXPLICIT_SAVE);
-  if (save) {
-    const body = save[1]!.trim();
-    // 只有「不要记住 X」这类否定动作才取消；「记住：不要做 X」是保存一条禁止规则。
-    if (NEGATED_SAVE.test(trimmed)) return dropped('N', text, 'negated save');
-    // 纯指代：仅在上下文能唯一确定对象时保存，否则明确澄清（不能静默当没发生）。
-    if (isDeicticOnly(body) && !hasStructuredValue(body)) {
+  // 2) 显式保存：中文 `记住…` 或英文 `Remember: …` / `Save to memory: …`。
+  //    不评价价值、不降候选、不按问句/长度拒绝。
+  const saveBody = matchExplicitSave(text);
+  if (saveBody !== undefined) {
+    const body = saveBody.trim();
+    // 纯指代：中文可尝试唯一上下文；英文不做消解，直接要求补全。
+    if ((isDeicticOnly(body) || DEICTIC_EN.test(body)) && !hasStructuredValue(body)) {
       const resolved = resolveDeictic(ctx);
       if (!resolved) return dropped('N', text, 'deictic save needs clarification');
       const candidate = buildCandidate(resolved, 'E1', 'explicit', ctx.now);
@@ -650,28 +705,14 @@ function routeUnit(text: string, ctx: RouterContext): AutoRoutedUnit {
     return { rule: 'E1', text, candidate };
   }
   // 有保存指令无正文：意图明确但对象缺失，记录澄清原因。
-  if (EXPLICIT_SAVE.test(trimmed) && !text.match(EXPLICIT_SAVE)?.[1]?.trim()) {
+  if (
+    (EXPLICIT_SAVE.test(trimmed) && !text.match(EXPLICIT_SAVE)?.[1]?.trim()) ||
+    EXPLICIT_SAVE_EMPTY_EN.test(trimmed)
+  ) {
     return dropped('N', text, 'explicit save without content');
   }
 
-  // 3) 完整顶层行为指令：以后/统一/禁止/不要/默认/一律（非问句、有明确对象）。
-  if (NEGATED_SAVE.test(trimmed)) return dropped('N', text, 'negated save');
-  const behavior =
-    trimmed.match(/^(?:本项目\s*[：:，,]?\s*)?(?:以后|下次)[，,：:]?\s*(.+)$/) ??
-    trimmed.match(/^(?:本项目\s*[：:，,]?\s*)?(?:统一|一律|全部|禁止|不要)\s*(.+)$/) ??
-    trimmed.match(/^(?:本项目\s*[：:，,]?\s*)?默认\s*(?:使用|走|用|开启|关闭|只|必须)(.+)$/) ??
-    trimmed.match(/^(?:from now on|always|never|default to)\b\s*(.+)$/i);
-  if (behavior) {
-    const body = behavior[1]!.trim();
-    const objectLike = body.length >= 2 && !/^(?:再|回头|继续|看|如果|假如|假设)/.test(body);
-    if (!QUESTION_LIKE.test(trimmed) && !HEDGE_OR_EXAMPLE.test(trimmed) && objectLike) {
-      const candidate = buildCandidate(trimmed, 'E1', 'explicit', ctx.now);
-      if (candidate) candidate.type = 'preference';
-      return { rule: 'E1', text, candidate };
-    }
-  }
-
-  // 4) 隐式内容：规则层一律不采（交给压缩/手动 LLM 提取）。
+  // 3) 隐式内容：规则层一律不采（交给压缩/手动 LLM 提取）。
   //    纠正意图存在但目标不唯一/不合法时，保留纠正的具体原因，便于解释为什么不更新。
   if (correction?.rule === 'C2') {
     return dropped('N', text, correction.reason ?? 'correction target not determinate');
@@ -692,7 +733,16 @@ export function routeText(
   if (input.current?.origin !== 'human') return result;
   // 显式保存：只剥离注入块，保留代码块/缩进/换行，正文原样入库；凭据在 routeUnit 内按正文脱敏。
   const blocksStripped = stripSyntheticBlocks(input.current.text);
-  const explicitWhole = EXPLICIT_SAVE.test(blocksStripped);
+  // 外层否定保存（不要记住…）必须先于拆分与纠正：整条消息不产生任何更新。
+  if (isNegatedSave(blocksStripped)) {
+    result.rules.N = 1;
+    result.dropped.push({ rule: 'N', text: blocksStripped, reason: 'negated save' });
+    return result;
+  }
+  const explicitWhole =
+    EXPLICIT_SAVE.test(blocksStripped) ||
+    EXPLICIT_SAVE_EN.test(blocksStripped) ||
+    EXPLICIT_SAVE_EMPTY_EN.test(blocksStripped);
   const text = explicitWhole ? blocksStripped : stripSynthetic(input.current.text);
   if (!text) return result;
   if (/^\s*You are (?:a|an) /i.test(text) && text.length > 200) return result;
@@ -708,7 +758,7 @@ export function routeText(
     now: input.now ?? Date.now(),
   };
   const whole = safeText.trim();
-  const units = EXPLICIT_SAVE.test(whole) ? [whole] : splitUnits(safeText);
+  const units = explicitWhole ? [whole] : splitUnits(safeText);
   for (const unit of units) {
     const routed = routeUnit(unit, ctx);
     result.rules[routed.rule] = (result.rules[routed.rule] ?? 0) + 1;

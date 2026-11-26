@@ -424,8 +424,8 @@ export class MemoryManager {
     if (!this.store.listMemoryCandidates)
       throw new MemoryValidationError('Capture is not supported by this store');
     return this.store.listMemoryCandidates({
-      status: 'pending',
       ...input,
+      status: input.status ?? 'pending',
       scope: input.scope ?? this.options.defaultScope,
     });
   }

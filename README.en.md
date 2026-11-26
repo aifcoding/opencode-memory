@@ -186,14 +186,15 @@ Configuration comes from `~/.config/opencode/agent-memory.jsonc` (or `.json`), w
 | `capture.agent` | `string` | none | **Deprecated**: startup migration error; use `capture.model` |
 | `capture.trustRoleAsOrigin` | `boolean` | `false` | v1 compatibility only: v1 cannot enforce tool isolation, so extraction fails closed; this switch does not change the outcome |
 | `capture.maxCandidates` | `number` | `8` | Maximum candidates per run (1..20) |
-| `autoCapture.enabled` | `boolean` | `true` | Write high-confidence signals as low-trust memories |
+| `capture.autoApprove` | `boolean` | `false` | When `true`, extracted candidates are approved immediately (`trust=high`, recallable, marked verified, excluded from C1 auto-correction, pinnable). Requires 2.5.0+; 2.4.0 and earlier use a strict `capture` schema and reject this field |
+| `autoCapture.enabled` | `boolean` | `true` | Execute explicit memory instructions only (`记住/Remember:`); other content is not captured |
 | `autoCapture.mode` | `'on' \| 'shadow'` | `'on'` | `shadow` generates candidates without writing; it still advances the session cursor and records no decisions |
 | `autoCapture.maxWritesPerTurn` | `number` | `3` | Maximum writes per turn (0..10) |
 | `autoRecall.mode` | `'off' \| 'hint' \| 'shadow' \| 'auto'` | `'auto'` | `auto` retrieves and injects summaries; `hint` injects only a fixed retrieval rule |
 | `autoRecall.maxItems` | `number` | `3` | Maximum injected memories (1..10) |
 | `autoRecall.maxCharacters` | `number` | `300` | Character budget for the injected block (50..1200, fences included); applies to `auto` only, `hint` is a fixed prompt |
 
-Capture adds model cost and processes session content. It is disabled by default; candidates do not participate in recall, Pin, or injection before approval.
+Capture adds model cost and processes session content. It is disabled by default; with `capture.autoApprove=false`, candidates do not participate in recall, Pin, or injection before approval. With `capture.autoApprove=true`, extracted results are written directly with `trust=high` (marked verified) and skip approval.
 
 `capture` and `autoCapture` are independent paths. `capture` is disabled by default and creates pending `memory_candidates` for approval. In v2, `autoCapture` is enabled by default and writes directly to `memories` without candidate approval; these entries can immediately participate in retrieval and automatic recall, while remaining marked `origin=agent`, `trust=low`. Credential filtering only rejects input matching the implemented rules; it cannot detect every secret. Do not enter or store credentials. Automatically recalled content may be sent to your model provider when using a remote model.
 
@@ -289,16 +290,28 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 On every model request, v2 runs one automatic memory pass:
 
 1. **Capture**: executes **explicit memory instructions only**; implicit content is not captured:
-   - **Written immediately** to `memories` (`origin=agent`, `trust=low`): `记住/记一下/保存下来` + body (the whole message becomes one memory; code blocks, indentation and line breaks are preserved verbatim; no question/length/word-count quality gate, up to the storage limit); complete top-level behaviour instructions (`以后/下次/统一/禁止/默认/一律/全部`, optionally prefixed with `本项目`); explicit corrections with `更正/改成/记住` intent, a unique target and matching old value (CAS update to the new value).
+   - **Written immediately** to `memories` (`origin=agent`, `trust=low`): `记住/记一下/保存下来` + body (the whole message becomes one memory; code blocks, indentation and line breaks are preserved verbatim; no question/length/word-count quality gate, up to the storage limit); behaviour rules are no longer written automatically — save them explicitly (e.g. `记住：以后统一用 Bun`); explicit corrections with `更正/改成/记住` intent, a unique target and matching old value (CAS update to the new value).
    - **Not captured**: passing configuration (`probe.port=18093`), pasted logs/JSON/tables, decision statements, Q&A pairs — no writes and no candidates at the rule layer; they are left to compaction/manual LLM extraction.
    - **Ambiguous reference** (`记住这个` without a unique structured object): no write, no candidate, ask for clarification.
    - **Safety boundary**: only trusted human input is executed (a `记住` inside automation or quotes is ignored); credentials are redacted, credential-only saves are rejected with a notice, and write failures are reported rather than silently turned into candidates; a different body under the same title creates a new uniquely titled entry instead of overwriting.
 2. **Recall**: defaults to `auto` and always uses `global/default`; FTS plus title-keyword admission (English word boundaries, generic-term filtering) produces a summary block. `hint` injects only a fixed retrieval prompt. The cache is keyed by user message plus the latest tool result. Pending candidates never enter `memories`, so neither recall nor `memory_recall` returns them.
 3. **Isolation**: the automatic-memory call has an outer error handler; capture and recall are separately wrapped, but the Pin transform sits outside it. Injected content is not persisted.
 
-LLM-assisted extraction is off by default. When enabled, locally redacted conversation material is sent to the selected model (the host default model unless `capture.model` pins one); this may incur cost, and regex redaction cannot guarantee that every secret is detected.
+LLM-assisted extraction is off by default. When enabled, locally redacted conversation material is sent to the selected model (the host default model unless `capture.model` pins one); this may incur cost, and regex redaction cannot guarantee that every secret is detected. With `capture.autoApprove=true`, extraction results go straight into memories (`trust=high`, immediately recallable); the default `false` keeps the candidate approval flow. On first load the plugin generates `/memory-list`, `/memory-candidates`, `/memory-review` and `/memory-search` TUI command templates (existing files are never overwritten).
 
 Limitations: explicit instructions are not truncated by `maxWritesPerTurn` (that budget remains for the LLM-extraction/candidate path); at most 20 new pending candidates per scope per day; 14-day candidate expiry is not implemented; the cursor deduplicates by user-text hash, so identical later input is skipped; the rule layer no longer produces implicit candidates; rules primarily target Chinese and are not quality-calibrated; user-authored and high-trust memories are never overwritten; a different body under the same title creates a new entry instead of overwriting; credential filtering only rejects rule matches and is not a complete guarantee; v1 does not enable this. The full rule set lives in [`admission-rules.md`](openspec/changes/2026-11-24-auto-memory-loop/admission-rules.md).
+
+### English instructions
+
+English users can save explicitly with a colon-prefixed command:
+
+```text
+Remember: this project uses Bun for scripts.
+Save to memory: the staging API is https://staging.example.com
+Please remember: never commit to main.
+```
+
+Only these strict forms are captured by the rule layer. Bare `remember ...`, `note that ...` and `keep in mind ...` are treated as ordinary conversation and are not stored. English natural-language corrections are not auto-applied; use `memory_update` by id.
 
 ### Session compaction archiving
 

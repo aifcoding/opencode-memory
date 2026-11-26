@@ -34,18 +34,18 @@
 - **WHEN** 已有 `test.db.port=3306`，用户再明确保存 `test.db.port=3307`
 - **THEN** 新增一条唯一标题记忆，既有记忆不被覆盖，也不产生候选
 
-### Requirement: 完整顶层行为指令立即保存
+### Requirement: 行为规则需显式保存
 
-系统 SHALL 识别完整的顶层行为指令（`以后/下次/统一/禁止/不要/默认/一律/全部`，可带「本项目」前缀，非问句、有明确对象）并立即保存为偏好；缺少对象或为问句时 SHALL 丢弃。
+系统 SHALL NOT 仅凭 `以后/下次/统一/禁止/默认` 等前缀自动写入行为规则；用户需要长期保存时 SHALL 使用显式保存（`记住/记一下/保存下来 + 正文`）。普通祈使句（`不要…`/`全部…`、一次性命令）SHALL NOT 写入。
 
-#### Scenario: 保存偏好
+#### Scenario: 行为规则带显式保存
 
-- **WHEN** 用户说 `以后都用中文回答` 或 `本项目统一使用 Bun`
+- **WHEN** 用户说 `记住：以后统一用 Bun`
 - **THEN** 正式记忆新增 1 条，type=preference
 
-#### Scenario: 无对象的偏好词
+#### Scenario: 无显式保存的行为指令
 
-- **WHEN** 用户说 `以后再看` 或 `默认端口是什么？`
+- **WHEN** 用户说 `以后都用中文回答` 或 `统一列出所有候选`
 - **THEN** 两库均无新增
 
 ### Requirement: 隐式内容不进入规则采集
@@ -80,6 +80,20 @@
 
 - **WHEN** 纠正没有可确定目标或存在多个匹配目标
 - **THEN** 不修改任何记忆，不写候选，并明确反馈失败原因
+
+### Requirement: 提取自动入库开关
+
+系统 SHALL 提供 `capture.autoApprove`（默认 false）。为 true 时，提取完成的候选 SHALL 直接批准入库（`origin=agent`、`trust=high`），不再进入待审；为 false 时 SHALL 保持待审并提示。自动入库同样 SHALL 经过候选风险扫描。
+
+#### Scenario: autoApprove 开启
+
+- **WHEN** `capture.autoApprove=true` 且提取完成
+- **THEN** 候选直接写入正式记忆（high），不产生待审候选
+
+#### Scenario: autoApprove 关闭
+
+- **WHEN** `capture.autoApprove=false`
+- **THEN** 候选保持 pending，等待审批
 
 ### Requirement: 显式指令的安全边界
 

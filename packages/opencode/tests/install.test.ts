@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { parse } from 'jsonc-parser';
 import { CONFIG_FILE_TEMPLATE, ensureConfigFile } from '../src/plugin-v1';
 import { ensureRulesTemplate } from '../src/capture/rules';
+import { defaultCommandsDir, ensureCommandTemplates } from '../src/capture/commands';
 
 const dirs: string[] = [];
 
@@ -50,4 +51,22 @@ test('rules template is generated independently of capture.enabled', () => {
   expect(ensureRulesTemplate(path)).toBe(true);
   expect(ensureRulesTemplate(path)).toBe(false);
   expect(readFileSync(path, 'utf8')).toContain('template-version: 1');
+});
+
+test('first load installs TUI command templates without overwriting', () => {
+  const dir = tempDir();
+  const created = ensureCommandTemplates(dir).sort();
+  expect(created).toEqual([
+    'memory-candidates.md',
+    'memory-list.md',
+    'memory-review.md',
+    'memory-search.md',
+  ]);
+
+  const listPath = join(defaultCommandsDir(dir), 'memory-list.md');
+  expect(readFileSync(listPath, 'utf8')).toContain('memory_ls');
+
+  writeFileSync(listPath, 'custom command');
+  expect(ensureCommandTemplates(dir)).toEqual([]);
+  expect(readFileSync(listPath, 'utf8')).toBe('custom command');
 });
