@@ -51,7 +51,7 @@
 推荐用 OpenCode 官方命令安装（自动安装包并写入全局配置，无需手改 `opencode.jsonc`）：
 
 ```bash
-opencode plugin add @aifcoding/opencode-memory@next
+opencode plugin add @aifcoding/opencode-memory
 ```
 
 首次加载会自动生成：
@@ -289,8 +289,6 @@ MCP 侧通过 `extraction` 配置块启用 LLM 提取，并提供 `memory_extrac
 - 超出配额时拒绝新的固定操作
 
 ### 自动记忆（v2）
-
-> 本地源码为 `@aifcoding/opencode-memory@2.4.0-rc.3`（未发布，依赖 `@aifcoding/memory-core@0.5.2`）；npm 上 `next` 为 `2.4.0-rc.3`（上一版行为），`latest` 是 `2.2.2`；本地源码领先（显式指令执行器）。
 
 v2 在每个模型请求前执行一次自动记忆流程：
 

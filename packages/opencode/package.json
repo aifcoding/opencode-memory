@@ -1,6 +1,6 @@
 {
   "name": "@aifcoding/opencode-memory",
-  "version": "2.4.0-rc.5",
+  "version": "2.4.0",
   "description": "opencode 本地持久记忆插件",
   "type": "module",
   "main": "dist/plugin.js",

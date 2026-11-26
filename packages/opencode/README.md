@@ -11,7 +11,7 @@ OpenCode 本地持久记忆插件，基于 [`@aifcoding/memory-core`](https://gi
 推荐用 OpenCode 官方命令安装（自动安装包并写入全局配置，无需手改 `opencode.jsonc`）：
 
 ```bash
-opencode plugin add @aifcoding/opencode-memory@next
+opencode plugin add @aifcoding/opencode-memory
 ```
 
 首次加载自动生成 `~/.config/opencode/agent-memory.jsonc`（默认开关，LLM 提取关闭）和 `~/.config/opencode/memory-capture.rules.md`（可编辑规则模板），数据库自动创建。
@@ -65,7 +65,7 @@ Recall 分层召回配置（可选，走默认值即可）：
 
 `memory_recall` 默认只返回标题+摘要（无摘要时回退正文前 200 字符），预算外候选以轻量 Ref 列表返回，全文用 `memory_read` 获取。
 
-自动记忆（仅 v2；本地源码 `2.4.0-rc.3` 未发布，依赖 `@aifcoding/memory-core@0.5.2`；npm 上的版本仍是旧采集行为）：
+自动记忆（仅 v2）：
 
 ```jsonc
 { "plugins": [{ "package": "@aifcoding/opencode-memory", "options": {

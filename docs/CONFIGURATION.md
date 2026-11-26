@@ -143,7 +143,7 @@ $HOME/.config/opencode
 {
   "plugins": [
     {
-      "package": "@aifcoding/opencode-memory@next",
+      "package": "@aifcoding/opencode-memory@latest",
       "options": {
         "autoCapture": { "enabled": true, "mode": "on", "maxWritesPerTurn": 3 },
         "autoRecall": { "mode": "auto", "maxItems": 3, "maxCharacters": 300 },

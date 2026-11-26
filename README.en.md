@@ -51,7 +51,7 @@ Pinned memory is not a fourth tier — it is a *usage mode* of long-term knowled
 Install with the official OpenCode command (it installs the package and writes the global config for you — no manual `opencode.jsonc` edit):
 
 ```bash
-opencode plugin add @aifcoding/opencode-memory@next
+opencode plugin add @aifcoding/opencode-memory
 ```
 
 On first load the plugin generates:
@@ -285,8 +285,6 @@ Pinned memories are appended to the end of messages through v1 `experimental.cha
 - New pins are rejected when the quota is exceeded
 
 ### Automatic memory (v2)
-
-> The local source is `@aifcoding/opencode-memory@2.4.0-rc.3` (unpublished, requires `@aifcoding/memory-core@0.5.2`); on npm, `next` is `2.4.0-rc.3` (previous behaviour) and `latest` is `2.2.2`; the local source is ahead (explicit instruction executor).
 
 On every model request, v2 runs one automatic memory pass:
 

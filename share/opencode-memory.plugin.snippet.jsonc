@@ -4,7 +4,7 @@
 {
   "plugins": [
     {
-      "package": "@aifcoding/opencode-memory@2.4.0-rc.5",
+      "package": "@aifcoding/opencode-memory@2.4.0",
       "options": {
         // 规则采集（默认开）：只从明确的记忆形态里采集，闲聊/问句不产候选
         "autoCapture": { "enabled": true, "mode": "on", "maxWritesPerTurn": 3 },
